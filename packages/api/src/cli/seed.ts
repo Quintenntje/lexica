@@ -10,7 +10,14 @@ loadEnvFile();
 const providers = createProviders(loadConfig());
 
 try {
-  await providers.vectorStore.init();
+  // A collection in an outdated layout (e.g. from before hybrid search) is recreated empty.
+  const { rebuilt } = await providers.vectorStore.init({ rebuildIfOutdated: true });
+  if (rebuilt) {
+    console.log(
+      'Recreated the Qdrant collection in the current layout (hybrid search). ' +
+        'Documents uploaded before must be uploaded again.',
+    );
+  }
   console.log(`Indexing sample contracts from ${SAMPLES_DIR} ...`);
   const started = Date.now();
   for (const doc of await seedSampleContracts(providers)) {

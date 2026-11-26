@@ -6,13 +6,32 @@ import type { ChunkPayload, VectorStore } from './types';
 const HEALTH_TIMEOUT_MS = 2000;
 const SCROLL_PAGE_SIZE = 256;
 
+/** Named vectors of each point: the dense embedding and the BM25 keyword vector. */
+const DENSE = 'dense';
+const KEYWORDS = 'bm25';
+/** Candidates taken from each ranking (semantic, keyword) before they are fused. */
+const PREFETCH_LIMIT = 20;
+
+/**
+ * Qdrant computes BM25 sparse vectors itself from text (English stemming and
+ * stop words by default), at upsert and at query time alike.
+ */
+const bm25 = (text: string) => ({ text, model: 'qdrant/bm25' });
+
 /**
  * RAG stage 4 — STORE (Qdrant implementation).
  *
- * All chunks live in one collection: one point per chunk, holding the chunk's
- * vector plus its text and citation metadata as payload. Cosine distance
- * matches how embedding models are trained to compare texts. `documentId` is
- * indexed so deleting or filtering one document's chunks stays fast.
+ * All chunks live in one collection: one point per chunk, holding two vectors
+ * plus the chunk's text and citation metadata as payload:
+ * - `dense`: the embedding, compared by cosine distance (how embedding models
+ *   are trained to compare texts); finds passages with a similar meaning.
+ * - `bm25`: a sparse keyword vector with IDF weighting; finds passages that
+ *   contain the exact words, such as "force majeure" or "7.2".
+ * `documentId` is indexed so deleting or filtering one document's chunks stays fast.
+ *
+ * Collections from before hybrid search (one unnamed dense vector) cannot be
+ * converted in place: `init({ rebuildIfOutdated: true })` (used by the seed
+ * command) recreates them; otherwise using one is an error that says to reseed.
  */
 export function createQdrantVectorStore(options: {
   url: string;
@@ -22,38 +41,52 @@ export function createQdrantVectorStore(options: {
   const client = new QdrantClient({ url: options.url, checkCompatibility: false });
   const { collection } = options;
 
-  // Created once per process; a failed attempt (e.g. Qdrant not up yet) is retried on next use.
-  let ready: Promise<void> | undefined;
-  const ensureCollection = () => {
-    ready ??= createCollectionIfMissing().catch((err: unknown) => {
+  // Prepared once per process; a failed attempt (e.g. Qdrant not up yet) is retried on next use.
+  let ready: Promise<{ rebuilt: boolean }> | undefined;
+  const ensureCollection = (rebuildIfOutdated = false) => {
+    ready ??= prepareCollection(rebuildIfOutdated).catch((err: unknown) => {
       ready = undefined;
       throw err;
     });
     return ready;
   };
 
-  async function createCollectionIfMissing() {
+  async function prepareCollection(rebuildIfOutdated: boolean) {
     const { exists } = await client.collectionExists(collection);
     if (exists) {
-      const info = await client.getCollection(collection);
-      const vectors = info.config.params.vectors;
-      const size = vectors && 'size' in vectors ? vectors.size : undefined;
-      if (size !== options.vectorSize) {
+      const problem = layoutProblem(await client.getCollection(collection));
+      if (!problem) return { rebuilt: false };
+      if (!rebuildIfOutdated) {
         throw new Error(
-          `Qdrant collection "${collection}" has vector size ${String(size)}, but the embedder produces ${options.vectorSize}. ` +
-            `Delete the collection (or change EMBEDDING_MODEL/EMBEDDING_DIMENSIONS) and seed again.`,
+          `Qdrant collection "${collection}" ${problem}. Run \`npm run seed\` to rebuild it ` +
+            `(this deletes the stored chunks: upload your own documents again afterwards).`,
         );
       }
-      return;
+      await client.deleteCollection(collection);
     }
     await client.createCollection(collection, {
-      vectors: { size: options.vectorSize, distance: 'Cosine' },
+      vectors: { [DENSE]: { size: options.vectorSize, distance: 'Cosine' } },
+      sparse_vectors: { [KEYWORDS]: { modifier: 'idf' } }, // BM25 needs Qdrant to apply IDF
     });
     await client.createPayloadIndex(collection, {
       field_name: 'documentId',
       field_schema: 'keyword',
       wait: true,
     });
+    return { rebuilt: exists };
+  }
+
+  /** Why an existing collection does not fit this store, or undefined if it does. */
+  function layoutProblem(info: Awaited<ReturnType<typeof client.getCollection>>) {
+    const { vectors, sparse_vectors } = info.config.params;
+    const dense = vectors && !('size' in vectors) ? vectors[DENSE] : undefined;
+    if (!dense || !sparse_vectors?.[KEYWORDS]) {
+      return `uses an older layout without the "${DENSE}" and "${KEYWORDS}" vectors that hybrid search needs`;
+    }
+    if (dense.size !== options.vectorSize) {
+      return `has vector size ${dense.size}, but the embedder produces ${options.vectorSize} (EMBEDDING_DIMENSIONS)`;
+    }
+    return undefined;
   }
 
   const byDocument = (documentId: string) => ({
@@ -73,17 +106,17 @@ export function createQdrantVectorStore(options: {
       }
     },
 
-    init: ensureCollection,
+    init: (initOptions) => ensureCollection(initOptions?.rebuildIfOutdated),
 
     async upsert(chunks) {
       if (chunks.length === 0) return;
       await ensureCollection();
       await client.upsert(collection, {
         wait: true, // return only once the points are searchable
-        points: chunks.map(({ vector, ...payload }) => ({
+        points: chunks.map(({ vector, searchText, ...payload }) => ({
           // Qdrant point ids must be UUIDs or integers; our own ids live in the payload.
           id: randomUUID(),
-          vector,
+          vector: { [DENSE]: vector, [KEYWORDS]: bm25(searchText) },
           payload: { ...payload },
         })),
       });
@@ -113,18 +146,55 @@ export function createQdrantVectorStore(options: {
       return summarizeDocuments(payloads);
     },
 
-    // RAG stage 5 — RETRIEVE: nearest neighbours of the question vector.
-    async search(vector, { limit }) {
+    // RAG stage 5 — RETRIEVE: semantic and keyword matches, fused by rank.
+    async search(vector, { limit, text }) {
       await ensureCollection();
+      if (text === undefined) {
+        const { points } = await client.query(collection, {
+          query: vector,
+          using: DENSE,
+          limit,
+          with_payload: true,
+        });
+        return points.map((p, i) => ({
+          ...(p.payload as unknown as ChunkPayload),
+          id: String(p.id),
+          score: p.score,
+          rank: i + 1,
+        }));
+      }
+
+      // Both rankings run inside Qdrant and are merged by reciprocal rank fusion:
+      // a point scores 1 / (k + rank) in each ranking it appears in, summed.
+      const prefetchLimit = Math.max(PREFETCH_LIMIT, limit);
       const { points } = await client.query(collection, {
-        query: vector,
+        prefetch: [
+          { query: vector, using: DENSE, limit: prefetchLimit },
+          { query: bm25(text), using: KEYWORDS, limit: prefetchLimit },
+        ],
+        query: { fusion: 'rrf' },
         limit,
         with_payload: true,
       });
-      return points.map((p) => ({
+      if (points.length === 0) return [];
+
+      // Fused scores only say how high a point ranked, not how relevant it is,
+      // so look up each hit's cosine similarity: that stays the reported score.
+      const ids = points.map((p) => p.id);
+      const dense = await client.query(collection, {
+        query: vector,
+        using: DENSE,
+        filter: { must: [{ has_id: ids }] },
+        params: { exact: true }, // scores every listed point, none skipped by the index
+        limit: ids.length,
+        with_payload: false,
+      });
+      const cosine = new Map(dense.points.map((p) => [String(p.id), p.score]));
+      return points.map((p, i) => ({
         ...(p.payload as unknown as ChunkPayload),
         id: String(p.id),
-        score: p.score,
+        score: cosine.get(String(p.id)) ?? 0,
+        rank: i + 1,
       }));
     },
   };

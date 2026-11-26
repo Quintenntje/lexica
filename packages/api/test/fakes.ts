@@ -78,6 +78,33 @@ function cosine(a: number[], b: number[]): number {
   return dot / (Math.hypot(...a) * Math.hypot(...b) || 1);
 }
 
+/** Lowercased words; like Qdrant's BM25 tokenizer, clause numbers such as "7.2" stay one token. */
+function keywords(text: string): string[] {
+  return text.toLowerCase().match(/[a-z0-9]+(?:\.[0-9]+)*/g) ?? [];
+}
+
+/** BM25 score of every chunk for the query (k1 = 1.2, b = 0.75); chunks sharing no term are left out. */
+function bm25(query: string, texts: string[]): Map<number, number> {
+  const docs = texts.map(keywords);
+  const avgLength = docs.reduce((sum, d) => sum + d.length, 0) / (docs.length || 1);
+  const scores = new Map<number, number>();
+  for (const term of new Set(keywords(query))) {
+    const containing = docs.filter((d) => d.includes(term)).length;
+    if (containing === 0) continue;
+    const idf = Math.log(1 + (docs.length - containing + 0.5) / (containing + 0.5));
+    docs.forEach((doc, i) => {
+      const tf = doc.filter((t) => t === term).length;
+      if (tf === 0) return;
+      const weight = (tf * 2.2) / (tf + 1.2 * (0.25 + (0.75 * doc.length) / avgLength));
+      scores.set(i, (scores.get(i) ?? 0) + idf * weight);
+    });
+  }
+  return scores;
+}
+
+/** Candidates taken from each ranking before fusion, as the Qdrant store does. */
+const PREFETCH_LIMIT = 20;
+
 /** Array-backed vector store. `chunks` exposes what the pipeline handed to the store. */
 export interface FakeVectorStore extends VectorStore {
   readonly chunks: readonly ChunkRecord[];
@@ -92,7 +119,9 @@ export function fakeVectorStore(reachable = true): FakeVectorStore {
     async checkHealth() {
       return { provider: 'fake', reachable };
     },
-    async init() {},
+    async init() {
+      return { rebuilt: false };
+    },
     async upsert(records) {
       chunks = [...chunks, ...records];
     },
@@ -103,16 +132,37 @@ export function fakeVectorStore(reachable = true): FakeVectorStore {
       if (!reachable) throw new Error('fake vector store is unreachable');
       return summarizeDocuments(chunks);
     },
-    async search(vector, { limit }) {
+    async search(vector, { limit, text }) {
       if (!reachable) throw new Error('fake vector store is unreachable');
-      return chunks
-        .map(({ vector: stored, ...payload }) => ({
+      const similarity = chunks.map((c) => cosine(vector, c.vector));
+      const byDistance = chunks.map((_, i) => i).sort((a, b) => similarity[b]! - similarity[a]!);
+      let ranked = byDistance;
+      if (text !== undefined) {
+        // Reciprocal rank fusion like Qdrant's { fusion: 'rrf' }: sum of 1 / (k + rank) over both rankings.
+        const keywordScores = bm25(
+          text,
+          chunks.map((c) => c.searchText),
+        );
+        const byKeyword = [...keywordScores.keys()].sort(
+          (a, b) => keywordScores.get(b)! - keywordScores.get(a)!,
+        );
+        const fused = new Map<number, number>();
+        for (const ranking of [byDistance, byKeyword]) {
+          ranking.slice(0, PREFETCH_LIMIT).forEach((i, rank) => {
+            fused.set(i, (fused.get(i) ?? 0) + 1 / (2 + rank));
+          });
+        }
+        ranked = [...fused.keys()].sort((a, b) => fused.get(b)! - fused.get(a)!);
+      }
+      return ranked.slice(0, limit).map((i, position) => {
+        const { vector: _vector, searchText: _searchText, ...payload } = chunks[i]!;
+        return {
           ...payload,
           id: `${payload.documentId}:${payload.chunkIndex}`,
-          score: cosine(vector, stored),
-        }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, limit);
+          score: similarity[i]!,
+          rank: position + 1,
+        };
+      });
     },
   };
 }

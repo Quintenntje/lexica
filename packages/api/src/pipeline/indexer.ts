@@ -32,12 +32,12 @@ export function documentIdFor(name: string): string {
 }
 
 /**
- * The text that is embedded for a chunk: the passage plus where it sits
+ * The text a chunk is found by (embedded for semantic search, indexed for keyword search): the passage plus where it sits
  * (document, article, clause). A clause like "Either party may terminate on
  * 30 days' notice" says nothing about which contract it belongs to; adding the
  * headings lets a question such as "notice period in the NDA" match it.
  */
-function embeddingText(documentName: string, chunk: TextChunk): string {
+function searchText(documentName: string, chunk: TextChunk): string {
   return [documentName, ...chunk.context, chunk.section, '', chunk.text].join('\n');
 }
 
@@ -55,12 +55,10 @@ export async function indexDocument(
   }
 
   // 3. EMBED: one vector per chunk, batched.
+  const texts = chunks.map((chunk) => searchText(input.name, chunk));
   const vectors: number[][] = [];
-  for (let i = 0; i < chunks.length; i += EMBED_BATCH_SIZE) {
-    const batch = chunks.slice(i, i + EMBED_BATCH_SIZE);
-    vectors.push(
-      ...(await embedder.embedDocuments(batch.map((c) => embeddingText(input.name, c)))),
-    );
+  for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
+    vectors.push(...(await embedder.embedDocuments(texts.slice(i, i + EMBED_BATCH_SIZE))));
   }
 
   // 4. STORE: replace any earlier version of this document, then upsert the new chunks.
@@ -77,6 +75,7 @@ export async function indexDocument(
     text: chunk.text,
     createdAt,
     vector: vectors[chunkIndex]!,
+    searchText: texts[chunkIndex]!,
   }));
   await vectorStore.deleteDocument(documentId);
   await vectorStore.upsert(records);

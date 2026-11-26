@@ -6,10 +6,12 @@ export const TOP_K = 5;
 /**
  * RAG stage 5 — RETRIEVE.
  *
- * The question is embedded with the same model as the passages, then the
- * vector store returns the `TOP_K` passages whose vectors are closest by
- * cosine similarity. The score travels with each passage so the UI can show
- * how close a match was.
+ * Hybrid search: the question is embedded with the same model as the passages
+ * (semantic match), and its words are matched against the passages with BM25
+ * (keyword match, so exact terms like "force majeure" or "Art. 7.2" are found
+ * even when their meaning is not close). The vector store fuses both rankings
+ * and returns the `TOP_K` best. Each passage keeps its cosine similarity as
+ * `score`, so the UI and the relevance threshold see how close a match was.
  */
 export async function retrieve(
   { embedder, vectorStore }: Pick<Providers, 'embedder' | 'vectorStore'>,
@@ -17,5 +19,5 @@ export async function retrieve(
   topK = TOP_K,
 ): Promise<SearchHit[]> {
   const vector = await embedder.embedQuery(question);
-  return vectorStore.search(vector, { limit: topK });
+  return vectorStore.search(vector, { limit: topK, text: question });
 }

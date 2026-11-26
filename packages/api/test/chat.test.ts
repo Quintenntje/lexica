@@ -142,9 +142,9 @@ describe('POST /api/chat', () => {
       text: '4.1 **Ownership.** All inventions created by the employee during employment belong to the employer.',
       score: expect.any(Number),
     });
-    // Scores are cosine similarities, most relevant first.
-    const scores = sources.map((s) => s.score);
-    expect(scores).toEqual([...scores].sort((a, b) => b - a));
+    // Scores are cosine similarities. Sources follow the fused (semantic + keyword)
+    // ranking, so they need not be sorted by score (see hybrid-search.test.ts).
+    for (const s of sources) expect(Math.abs(s.score)).toBeLessThanOrEqual(1);
     // Every source the client sees is a passage the model was given, under the same number.
     for (const s of sources) {
       expect(chatModel.calls[0]!.system).toContain(`[${s.index}] ${s.documentName} — ${s.section}`);
