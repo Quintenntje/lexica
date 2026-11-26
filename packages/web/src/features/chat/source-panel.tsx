@@ -1,14 +1,47 @@
 import type { Source } from '@lexica/shared';
 import { FileText, X } from 'lucide-react';
+import { useEffect, useRef } from 'react';
 import { Button } from '@/components/ui/button';
 import { sourceLocation } from './source-location';
 
-/** Side panel with the full text of a cited passage and where it comes from. */
-export function SourcePanel({ source, onClose }: { source: Source; onClose: () => void }) {
+/**
+ * Side panel with the full text of a cited passage and where it comes from.
+ * Focus moves into it whenever it shows a passage; Escape closes it.
+ * `onClose` is told whether focus was inside, so the caller can hand it back.
+ */
+export function SourcePanel({
+  source,
+  onClose,
+}: {
+  source: Source;
+  onClose: (hadFocus: boolean) => void;
+}) {
+  const panelRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    panelRef.current?.focus();
+  }, [source.id]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      event.preventDefault();
+      onClose(hasFocus());
+    }
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  });
+
+  function hasFocus() {
+    return panelRef.current?.contains(document.activeElement) ?? false;
+  }
+
   return (
     <aside
-      aria-label="Source passage"
-      className="flex max-h-[calc(100svh-8rem)] flex-col overflow-hidden rounded-xl border bg-card lg:sticky lg:top-20"
+      ref={panelRef}
+      tabIndex={-1}
+      aria-label={`Source ${source.index}: ${source.documentName}`}
+      className="flex max-h-[calc(100svh-8rem)] scroll-mt-20 flex-col overflow-hidden rounded-xl border bg-card outline-none focus-visible:ring-2 focus-visible:ring-ring lg:sticky lg:top-20"
     >
       <header className="flex items-start gap-3 border-b px-4 py-3">
         <span className="mt-0.5 inline-flex h-6 min-w-6 items-center justify-center rounded-md bg-secondary px-1.5 text-xs font-semibold text-secondary-foreground tabular-nums">
@@ -21,7 +54,13 @@ export function SourcePanel({ source, onClose }: { source: Source; onClose: () =
           </h2>
           <p className="text-xs text-muted-foreground">{sourceLocation(source)}</p>
         </div>
-        <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close source panel">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => onClose(hasFocus())}
+          aria-label="Close source panel"
+          title="Close (Esc)"
+        >
           <X />
         </Button>
       </header>
