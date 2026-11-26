@@ -20,7 +20,12 @@ describe('GET /api/health', () => {
     expect(body).toEqual({
       status: 'ok',
       vectorStore: { provider: 'fake', reachable: true },
-      embedder: { provider: 'fake', model: 'nomic-embed-text', reachable: true, modelPresent: true },
+      embedder: {
+        provider: 'fake',
+        model: 'nomic-embed-text',
+        reachable: true,
+        modelPresent: true,
+      },
       chatModel: { provider: 'fake', model: 'qwen2.5:3b', reachable: true, modelPresent: true },
     });
   });
@@ -73,6 +78,6 @@ describe('unknown routes', () => {
     }).request('/api/nope');
 
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: { code: 'not_found', message: expect.any(String) } });
+    expect(await res.json()).toEqual({ error: { code: 'NOT_FOUND', message: expect.any(String) } });
   });
 });

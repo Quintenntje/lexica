@@ -18,7 +18,11 @@ async function checkOllamaModel(baseUrl: string, model: string): Promise<ModelHe
     });
     if (!res.ok) return health;
     const { models = [] } = (await res.json()) as { models?: { name: string }[] };
-    return { ...health, reachable: true, modelPresent: models.some((m) => sameModel(m.name, model)) };
+    return {
+      ...health,
+      reachable: true,
+      modelPresent: models.some((m) => sameModel(m.name, model)),
+    };
   } catch {
     return health;
   }

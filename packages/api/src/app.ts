@@ -13,13 +13,13 @@ export function createApp(providers: Providers) {
   app.route('/api/health', healthRoutes(providers));
 
   app.notFound((c) =>
-    c.json<ApiError>({ error: { code: 'not_found', message: `No route for ${c.req.path}` } }, 404),
+    c.json<ApiError>({ error: { code: 'NOT_FOUND', message: `No route for ${c.req.path}` } }, 404),
   );
 
   app.onError((err, c) => {
     console.error(err);
     return c.json<ApiError>(
-      { error: { code: 'internal_error', message: 'Something went wrong on the server.' } },
+      { error: { code: 'INTERNAL_ERROR', message: 'Something went wrong on the server.' } },
       500,
     );
   });
