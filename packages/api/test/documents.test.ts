@@ -1,19 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { listDocumentsResponseSchema } from '@lexica/shared';
-import { createApp } from '../src/app';
-import { indexDocument } from '../src/pipeline/indexer';
-import { fakeChatModel, fakeEmbedder, fakeVectorStore } from './fakes';
-
-function setup() {
-  const providers = {
-    embedder: fakeEmbedder(),
-    chatModel: fakeChatModel(),
-    vectorStore: fakeVectorStore(),
-  };
-  return { providers, app: createApp(providers) };
-}
-
-const encode = (text: string) => new TextEncoder().encode(text);
+import { fakeVectorStore } from './fakes';
+import { listDocuments, testApp, uploadDocument } from './http';
 
 /** A small contract: a preamble, then two articles with numbered, titled clauses. */
 const SMALL_CONTRACT = `# Sample Services Agreement
@@ -31,27 +18,17 @@ This agreement is made between Acme Example Ltd and Example Client B.V.
 2.1 **Termination for convenience.** Either party may terminate this agreement on thirty (30) days' written notice.
 `;
 
-async function listDocuments(app: ReturnType<typeof createApp>) {
-  const res = await app.request('/api/documents');
-  expect(res.status).toBe(200);
-  return listDocumentsResponseSchema.parse(await res.json()).documents;
-}
-
 describe('GET /api/documents', () => {
   it('returns an empty list when nothing is indexed', async () => {
-    const { app } = setup();
+    const { app } = testApp();
     expect(await listDocuments(app)).toEqual([]);
   });
 
-  it('lists an indexed document with its name, file type, chunk count and date', async () => {
-    const { app, providers } = setup();
+  it('lists an uploaded document with its name, file type, chunk count and date', async () => {
+    const { app } = testApp();
     const before = Date.now();
 
-    await indexDocument(providers, {
-      name: 'services.md',
-      fileType: 'md',
-      data: encode(SMALL_CONTRACT),
-    });
+    await uploadDocument(app, 'services.md', SMALL_CONTRACT);
 
     const documents = await listDocuments(app);
     expect(documents).toEqual([
@@ -69,11 +46,7 @@ describe('GET /api/documents', () => {
 
 describe('GET /api/documents when the vector store is down', () => {
   it('returns 503 with the shared error shape', async () => {
-    const app = createApp({
-      embedder: fakeEmbedder(),
-      chatModel: fakeChatModel(),
-      vectorStore: fakeVectorStore(false),
-    });
+    const { app } = testApp({ vectorStore: fakeVectorStore({ reachable: false }) });
     const res = await app.request('/api/documents');
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({

@@ -1,30 +1,19 @@
 import { Hono, type Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import type { ContentfulStatusCode } from 'hono/utils/http-status';
 import {
-  fileTypeSchema,
+  fileTypeFromName,
   listDocumentsResponseSchema,
   MAX_UPLOAD_BYTES,
-  type ApiError,
   type DocumentSummary,
   type ListDocumentsResponse,
 } from '@lexica/shared';
-import { DocumentRejectedError } from '../pipeline/errors';
+import { DocumentRejectedError, ProviderUnavailableError } from '../pipeline/errors';
 import { indexDocument } from '../pipeline/indexer';
 import type { Providers } from '../providers/types';
-
-function apiError(c: Context, status: ContentfulStatusCode, code: string, message: string) {
-  return c.json<ApiError>({ error: { code, message } }, status);
-}
+import { apiError, serviceUnavailable } from './errors';
 
 function vectorStoreUnavailable(c: Context, err: unknown) {
-  console.error(err);
-  return apiError(
-    c,
-    503,
-    'VECTOR_STORE_UNAVAILABLE',
-    'Could not reach the vector store. Is Qdrant running (npm run setup)?',
-  );
+  return serviceUnavailable(c, new ProviderUnavailableError('VECTOR_STORE_UNAVAILABLE', err));
 }
 
 /**
@@ -74,9 +63,8 @@ export function documentRoutes(providers: Providers) {
 
         // Keep only the base name: some clients send a path, and the name is the document's identity.
         const name = file.name.split(/[\\/]/).pop()?.trim() ?? '';
-        const extension = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
-        const fileType = fileTypeSchema.safeParse(extension);
-        if (!name || !fileType.success) {
+        const fileType = fileTypeFromName(name);
+        if (!name || !fileType) {
           return apiError(
             c,
             415,
@@ -88,10 +76,12 @@ export function documentRoutes(providers: Providers) {
         try {
           const data = new Uint8Array(await file.arrayBuffer());
           // Same pipeline as the seed command; a same-named document is replaced, not duplicated.
-          const summary = await indexDocument(providers, { name, fileType: fileType.data, data });
+          const summary = await indexDocument(providers, { name, fileType, data });
           return c.json<DocumentSummary>(summary, 201);
         } catch (err) {
           if (err instanceof DocumentRejectedError) return apiError(c, 422, err.code, err.message);
+          // Ollama or Qdrant is down: a 503 that says which one, like list, delete and chat.
+          if (err instanceof ProviderUnavailableError) return serviceUnavailable(c, err);
           throw err;
         }
       },

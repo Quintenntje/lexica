@@ -1,8 +1,9 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { DocumentSummary, FileType } from '@lexica/shared';
+import { summarizeDocuments } from '../providers/summarize';
 import type { ChunkRecord, Providers } from '../providers/types';
 import { chunkDocument, type TextChunk } from './chunker';
-import { DocumentRejectedError } from './errors';
+import { DocumentRejectedError, ProviderUnavailableError } from './errors';
 import { parseDocument } from './parser';
 
 /**
@@ -32,13 +33,22 @@ export function documentIdFor(name: string): string {
 }
 
 /**
- * The text a chunk is found by (embedded for semantic search, indexed for keyword search): the passage plus where it sits
- * (document, article, clause). A clause like "Either party may terminate on
- * 30 days' notice" says nothing about which contract it belongs to; adding the
- * headings lets a question such as "notice period in the NDA" match it.
+ * The text a chunk is found by with keyword (BM25) search: the passage plus
+ * where it sits (article, clause), so "Art. 7.2" or "Governing law" match.
  */
-function searchText(documentName: string, chunk: TextChunk): string {
-  return [documentName, ...chunk.context, chunk.section, '', chunk.text].join('\n');
+function keywordText(chunk: TextChunk): string {
+  return [...chunk.context, chunk.section, '', chunk.text].join('\n');
+}
+
+/**
+ * The text that is embedded for semantic search: the keyword text plus the
+ * document name. A clause like "Either party may terminate on 30 days' notice"
+ * says nothing about which contract it belongs to; the name lets a question
+ * such as "notice period in the NDA" land near it. (It stays out of the
+ * keyword text, where it would match every chunk of the document equally.)
+ */
+function embeddingText(documentName: string, chunk: TextChunk): string {
+  return `${documentName}\n${keywordText(chunk)}`;
 }
 
 export async function indexDocument(
@@ -55,17 +65,21 @@ export async function indexDocument(
   }
 
   // 3. EMBED: one vector per chunk, batched.
-  const texts = chunks.map((chunk) => searchText(input.name, chunk));
+  const texts = chunks.map((chunk) => embeddingText(input.name, chunk));
   const vectors: number[][] = [];
-  for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
-    vectors.push(...(await embedder.embedDocuments(texts.slice(i, i + EMBED_BATCH_SIZE))));
+  try {
+    for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
+      vectors.push(...(await embedder.embedDocuments(texts.slice(i, i + EMBED_BATCH_SIZE))));
+    }
+  } catch (err) {
+    throw new ProviderUnavailableError('EMBEDDER_UNAVAILABLE', err);
   }
 
-  // 4. STORE: replace any earlier version of this document, then upsert the new chunks.
-  // Each chunk carries the metadata a citation needs (document, section, page).
+  // 4. STORE: each chunk carries the metadata a citation needs (document, section, page).
   const documentId = documentIdFor(input.name);
   const createdAt = new Date().toISOString();
   const records: ChunkRecord[] = chunks.map((chunk, chunkIndex) => ({
+    id: randomUUID(),
     documentId,
     documentName: input.name,
     fileType: input.fileType,
@@ -75,16 +89,17 @@ export async function indexDocument(
     text: chunk.text,
     createdAt,
     vector: vectors[chunkIndex]!,
-    searchText: texts[chunkIndex]!,
+    keywordText: keywordText(chunk),
   }));
-  await vectorStore.deleteDocument(documentId);
-  await vectorStore.upsert(records);
+  try {
+    // The new version is stored before the earlier one is removed, so a failed
+    // upsert leaves the earlier version in place instead of losing the document.
+    // (If only the removal fails, both versions remain until the next upload.)
+    await vectorStore.upsert(records);
+    await vectorStore.deleteDocument(documentId, { keep: records.map((r) => r.id) });
+  } catch (err) {
+    throw new ProviderUnavailableError('VECTOR_STORE_UNAVAILABLE', err);
+  }
 
-  return {
-    id: documentId,
-    name: input.name,
-    fileType: input.fileType,
-    chunkCount: records.length,
-    createdAt,
-  };
+  return summarizeDocuments(records)[0]!;
 }

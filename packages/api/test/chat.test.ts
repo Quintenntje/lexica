@@ -1,16 +1,15 @@
-import {
-  parseJsonEventStream,
-  readUIMessageStream,
-  uiMessageChunkSchema,
-  type UIMessage,
-} from 'ai';
 import { describe, expect, it } from 'vitest';
-import { REFUSAL_SENTENCE, sourceSchema, type Source } from '@lexica/shared';
+import { REFUSAL_SENTENCE } from '@lexica/shared';
 import { createApp } from '../src/app';
-import { indexDocument } from '../src/pipeline/indexer';
 import { fakeChatModel, fakeEmbedder, fakeVectorStore } from './fakes';
-
-const encode = (text: string) => new TextEncoder().encode(text);
+import {
+  FAKE_MIN_RELEVANCE,
+  postChat,
+  readAnswer,
+  testApp,
+  uploadDocument,
+  userMessage,
+} from './http';
 
 const NDA = `# Mutual NDA
 
@@ -40,62 +39,12 @@ const EMPLOYMENT = `# Employment Agreement
 6.1 **Salary.** The employee receives a gross monthly salary paid on the last working day.
 `;
 
-/**
- * Relevance threshold for the bag-of-words fake embedder: questions about the
- * documents below score 0.5 or more, unrelated ones 0.4 or less.
- */
-const FAKE_MIN_RELEVANCE = 0.45;
-
 async function setup(reply?: string[]) {
-  const providers = {
-    embedder: fakeEmbedder(),
-    chatModel: fakeChatModel({}, reply),
-    vectorStore: fakeVectorStore(),
-  };
-  await indexDocument(providers, { name: 'nda.md', fileType: 'md', data: encode(NDA) });
-  await indexDocument(providers, {
-    name: 'employment.md',
-    fileType: 'md',
-    data: encode(EMPLOYMENT),
-  });
-  return { ...providers, app: createApp(providers, { minRelevanceScore: FAKE_MIN_RELEVANCE }) };
-}
-
-function userMessage(text: string, id = 'u1') {
-  return { id, role: 'user', parts: [{ type: 'text', text }] };
-}
-
-function postChat(app: ReturnType<typeof createApp>, body: unknown) {
-  return app.request('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-}
-
-/** Rebuilds the final assistant message from the stream, exactly as `useChat` does. */
-async function readAnswer(res: Response) {
-  const chunks = parseJsonEventStream({
-    stream: res.body!,
-    schema: uiMessageChunkSchema,
-  }).pipeThrough(
-    new TransformStream({
-      transform(result, controller) {
-        if (!result.success) throw result.error;
-        controller.enqueue(result.value);
-      },
-    }),
-  );
-  let message: UIMessage | undefined;
-  for await (const m of readUIMessageStream({ stream: chunks })) message = m;
-  const text = message!.parts
-    .filter((p) => p.type === 'text')
-    .map((p) => p.text)
-    .join('');
-  const sources: Source[] = message!.parts
-    .filter((p) => p.type === 'data-source')
-    .map((p) => sourceSchema.parse((p as { data: unknown }).data));
-  return { text, sources };
+  const chatModel = fakeChatModel({}, reply);
+  const providers = testApp({ chatModel });
+  await uploadDocument(providers.app, 'nda.md', NDA);
+  await uploadDocument(providers.app, 'employment.md', EMPLOYMENT);
+  return { ...providers, chatModel };
 }
 
 describe('POST /api/chat', () => {
@@ -256,7 +205,7 @@ describe('POST /api/chat when the documents cannot be searched', () => {
     const app = createApp({
       embedder: fakeEmbedder(),
       chatModel: fakeChatModel(),
-      vectorStore: fakeVectorStore(false),
+      vectorStore: fakeVectorStore({ reachable: false }),
     });
 
     const res = await postChat(app, { messages: [userMessage('What is the notice period?')] });

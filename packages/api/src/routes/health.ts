@@ -26,19 +26,21 @@ async function vectorStoreHealth(store: VectorStore): Promise<VectorStoreHealth>
 
 export function healthRoutes({ embedder, chatModel, vectorStore }: Providers) {
   return new Hono().get('/', async (c) => {
-    const [vs, emb, chat] = await Promise.all([
+    const [vectorStoreStatus, embedderStatus, chatModelStatus] = await Promise.all([
       vectorStoreHealth(vectorStore),
       modelHealth(embedder),
       modelHealth(chatModel),
     ]);
 
-    const allGood = vs.reachable && [emb, chat].every((m) => m.reachable && m.modelPresent);
+    const allGood =
+      vectorStoreStatus.reachable &&
+      [embedderStatus, chatModelStatus].every((m) => m.reachable && m.modelPresent);
 
     const body: HealthResponse = healthResponseSchema.parse({
       status: allGood ? 'ok' : 'degraded',
-      vectorStore: vs,
-      embedder: emb,
-      chatModel: chat,
+      vectorStore: vectorStoreStatus,
+      embedder: embedderStatus,
+      chatModel: chatModelStatus,
     });
     return c.json(body);
   });

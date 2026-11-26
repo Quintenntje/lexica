@@ -1,9 +1,9 @@
 import { Hono } from 'hono';
-import type { ApiError } from '@lexica/shared';
 import type { Providers } from './providers/types';
 import { DEFAULT_MIN_RELEVANCE_SCORE } from './pipeline/relevance';
 import { chatRoutes, type ChatOptions } from './routes/chat';
 import { documentRoutes } from './routes/documents';
+import { apiError } from './routes/errors';
 import { healthRoutes } from './routes/health';
 
 /**
@@ -22,16 +22,11 @@ export function createApp(
   app.route('/api/documents', documentRoutes(providers));
   app.route('/api/chat', chatRoutes(providers, { minRelevanceScore }));
 
-  app.notFound((c) =>
-    c.json<ApiError>({ error: { code: 'NOT_FOUND', message: `No route for ${c.req.path}` } }, 404),
-  );
+  app.notFound((c) => apiError(c, 404, 'NOT_FOUND', `No route for ${c.req.path}`));
 
   app.onError((err, c) => {
     console.error(err);
-    return c.json<ApiError>(
-      { error: { code: 'INTERNAL_ERROR', message: 'Something went wrong on the server.' } },
-      500,
-    );
+    return apiError(c, 500, 'INTERNAL_ERROR', 'Something went wrong on the server.');
   });
 
   return app;

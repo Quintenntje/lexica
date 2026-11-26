@@ -8,7 +8,6 @@
  *
  * Usage (from the repo root): npm run eval [-- --verbose]
  */
-import { QdrantClient } from '@qdrant/js-client-rest';
 import {
   parseJsonEventStream,
   readUIMessageStream,
@@ -16,20 +15,15 @@ import {
   type UIMessage,
 } from 'ai';
 import { isRefusal, sourceSchema, type Source } from '@lexica/shared';
-import { createApp } from '../app';
-import { loadConfig, loadEnvFile } from '../config';
+import { bootstrap } from '../bootstrap';
 import { EVAL_CASES, type EvalCase, type ExpectedSource } from '../eval/cases';
 import { seedSampleContracts } from '../pipeline/seed';
-import { createProviders } from '../providers';
 
 const verbose = process.argv.includes('--verbose');
 
-loadEnvFile();
-const baseConfig = loadConfig();
+// A fresh collection name, so the eval never reads or drops your own collection.
 const collection = `lexica_eval_${Date.now()}`;
-const config = { ...baseConfig, QDRANT_COLLECTION: collection };
-const providers = createProviders(config);
-const app = createApp(providers, { minRelevanceScore: config.MIN_RELEVANCE_SCORE });
+const { config, providers, app } = bootstrap({ QDRANT_COLLECTION: collection });
 
 interface Answer {
   text: string;
@@ -216,12 +210,6 @@ function report(results: CaseResult[]) {
 
 // ---------------------------------------------------------------- main
 
-async function dropCollection() {
-  if (collection === baseConfig.QDRANT_COLLECTION) return; // never drop the real collection
-  const client = new QdrantClient({ url: config.QDRANT_URL, checkCompatibility: false });
-  if ((await client.collectionExists(collection)).exists) await client.deleteCollection(collection);
-}
-
 let exitCode = 0;
 try {
   console.log(
@@ -244,7 +232,7 @@ try {
   console.error('Are Qdrant and Ollama running and the models pulled? Run npm run setup.');
   exitCode = 1;
 } finally {
-  await dropCollection().catch((err: unknown) => {
+  await providers.vectorStore.drop().catch((err: unknown) => {
     console.error(`Could not drop temporary collection "${collection}": ${String(err)}`);
   });
 }

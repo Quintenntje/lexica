@@ -1,7 +1,7 @@
-import { randomUUID } from 'node:crypto';
 import { QdrantClient } from '@qdrant/js-client-rest';
+import { fuseRankings } from './fusion';
 import { summarizeDocuments } from './summarize';
-import type { ChunkPayload, VectorStore } from './types';
+import type { ChunkPayload, SearchHit, VectorStore } from './types';
 
 const HEALTH_TIMEOUT_MS = 2000;
 const SCROLL_PAGE_SIZE = 256;
@@ -113,18 +113,28 @@ export function createQdrantVectorStore(options: {
       await ensureCollection();
       await client.upsert(collection, {
         wait: true, // return only once the points are searchable
-        points: chunks.map(({ vector, searchText, ...payload }) => ({
-          // Qdrant point ids must be UUIDs or integers; our own ids live in the payload.
-          id: randomUUID(),
-          vector: { [DENSE]: vector, [KEYWORDS]: bm25(searchText) },
+        points: chunks.map(({ id, vector, keywordText, ...payload }) => ({
+          id, // a UUID, which Qdrant accepts as a point id
+          vector: { [DENSE]: vector, [KEYWORDS]: bm25(keywordText) },
           payload: { ...payload },
         })),
       });
     },
 
-    async deleteDocument(documentId) {
+    async deleteDocument(documentId, { keep = [] } = {}) {
       await ensureCollection();
-      await client.delete(collection, { wait: true, filter: byDocument(documentId) });
+      const filter = byDocument(documentId);
+      await client.delete(collection, {
+        wait: true,
+        filter: keep.length > 0 ? { ...filter, must_not: [{ has_id: keep }] } : filter,
+      });
+    },
+
+    async drop() {
+      ready = undefined;
+      if ((await client.collectionExists(collection)).exists) {
+        await client.deleteCollection(collection);
+      }
     },
 
     async listDocuments() {
@@ -149,53 +159,59 @@ export function createQdrantVectorStore(options: {
     // RAG stage 5 — RETRIEVE: semantic and keyword matches, fused by rank.
     async search(vector, { limit, text }) {
       await ensureCollection();
-      if (text === undefined) {
+      const prefetchLimit = Math.max(PREFETCH_LIMIT, limit);
+      const [semantic, keyword] = await Promise.all([
+        client.query(collection, {
+          query: vector,
+          using: DENSE,
+          limit: prefetchLimit,
+          with_payload: true,
+        }),
+        client.query(collection, {
+          query: bm25(text),
+          using: KEYWORDS,
+          limit: prefetchLimit,
+          with_payload: true,
+        }),
+      ]);
+
+      // Both rankings are merged by reciprocal rank fusion (see fusion.ts).
+      const payloads = new Map<string, ChunkPayload>();
+      for (const p of [...semantic.points, ...keyword.points]) {
+        payloads.set(String(p.id), p.payload as unknown as ChunkPayload);
+      }
+      const keywordIds = keyword.points.map((p) => String(p.id));
+      const ids = fuseRankings([semantic.points.map((p) => String(p.id)), keywordIds]).slice(
+        0,
+        limit,
+      );
+
+      // Fused scores only say how high a point ranked, not how relevant it is, so every
+      // hit reports its cosine similarity. Hits found only by keyword have none yet: look it up.
+      const cosine = new Map(semantic.points.map((p) => [String(p.id), p.score]));
+      const missing = ids.filter((id) => !cosine.has(id));
+      if (missing.length > 0) {
         const { points } = await client.query(collection, {
           query: vector,
           using: DENSE,
-          limit,
-          with_payload: true,
+          filter: { must: [{ has_id: missing }] },
+          params: { exact: true }, // scores every listed point, none skipped by the index
+          limit: missing.length,
+          with_payload: false,
         });
-        return points.map((p, i) => ({
-          ...(p.payload as unknown as ChunkPayload),
-          id: String(p.id),
-          score: p.score,
-          rank: i + 1,
-        }));
+        for (const p of points) cosine.set(String(p.id), p.score);
       }
 
-      // Both rankings run inside Qdrant and are merged by reciprocal rank fusion:
-      // a point scores 1 / (k + rank) in each ranking it appears in, summed.
-      const prefetchLimit = Math.max(PREFETCH_LIMIT, limit);
-      const { points } = await client.query(collection, {
-        prefetch: [
-          { query: vector, using: DENSE, limit: prefetchLimit },
-          { query: bm25(text), using: KEYWORDS, limit: prefetchLimit },
-        ],
-        query: { fusion: 'rrf' },
-        limit,
-        with_payload: true,
+      return ids.map((id, i): SearchHit => {
+        const keywordIndex = keywordIds.indexOf(id);
+        return {
+          ...payloads.get(id)!,
+          id,
+          score: cosine.get(id) ?? 0,
+          rank: i + 1,
+          keywordRank: keywordIndex === -1 ? null : keywordIndex + 1,
+        };
       });
-      if (points.length === 0) return [];
-
-      // Fused scores only say how high a point ranked, not how relevant it is,
-      // so look up each hit's cosine similarity: that stays the reported score.
-      const ids = points.map((p) => p.id);
-      const dense = await client.query(collection, {
-        query: vector,
-        using: DENSE,
-        filter: { must: [{ has_id: ids }] },
-        params: { exact: true }, // scores every listed point, none skipped by the index
-        limit: ids.length,
-        with_payload: false,
-      });
-      const cosine = new Map(dense.points.map((p) => [String(p.id), p.score]));
-      return points.map((p, i) => ({
-        ...(p.payload as unknown as ChunkPayload),
-        id: String(p.id),
-        score: cosine.get(String(p.id)) ?? 0,
-        rank: i + 1,
-      }));
     },
   };
 }

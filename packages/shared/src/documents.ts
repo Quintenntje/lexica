@@ -23,6 +23,13 @@ export const listDocumentsResponseSchema = z.object({
 });
 
 export type FileType = z.infer<typeof fileTypeSchema>;
+
+/** The file type of a file name, from its extension (any case), or undefined if Lexica cannot index it. */
+export function fileTypeFromName(name: string): FileType | undefined {
+  const dot = name.lastIndexOf('.');
+  const result = fileTypeSchema.safeParse(dot === -1 ? '' : name.slice(dot + 1).toLowerCase());
+  return result.success ? result.data : undefined;
+}
 export type DocumentSummary = z.infer<typeof documentSummarySchema>;
 export type ListDocumentsResponse = z.infer<typeof listDocumentsResponseSchema>;
 

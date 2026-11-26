@@ -34,7 +34,7 @@ describe('GET /api/health', () => {
     const { res, body } = await getHealth({
       embedder: fakeEmbedder(),
       chatModel: fakeChatModel(),
-      vectorStore: fakeVectorStore(false),
+      vectorStore: fakeVectorStore({ reachable: false }),
     });
 
     expect(res.status).toBe(200);

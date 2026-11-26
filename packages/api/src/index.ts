@@ -1,12 +1,7 @@
 import { serve } from '@hono/node-server';
-import { createApp } from './app';
-import { loadConfig, loadEnvFile } from './config';
-import { createProviders } from './providers';
+import { bootstrap } from './bootstrap';
 
-loadEnvFile();
-const config = loadConfig();
-const providers = createProviders(config);
-const app = createApp(providers, { minRelevanceScore: config.MIN_RELEVANCE_SCORE });
+const { config, providers, app } = bootstrap();
 
 // Create the Qdrant collection on startup if it is missing. If Qdrant is not up
 // yet, the API still starts (health shows it) and the store retries on first use.

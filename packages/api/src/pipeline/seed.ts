@@ -1,14 +1,12 @@
 import { readdir, readFile } from 'node:fs/promises';
-import { extname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { DocumentSummary, FileType } from '@lexica/shared';
+import { fileTypeFromName, type DocumentSummary } from '@lexica/shared';
 import type { Providers } from '../providers/types';
 import { indexDocument } from './indexer';
 
 /** The fictional sample contracts that ship with the repo (`/samples`). */
 export const SAMPLES_DIR = fileURLToPath(new URL('../../../../samples', import.meta.url));
-
-const FILE_TYPES: Record<string, FileType> = { '.md': 'md', '.txt': 'txt', '.pdf': 'pdf' };
 
 /**
  * Indexes every sample contract through the same pipeline as uploads.
@@ -18,13 +16,12 @@ export async function seedSampleContracts(
   providers: Providers,
   dir: string = SAMPLES_DIR,
 ): Promise<DocumentSummary[]> {
-  const files = (await readdir(dir)).filter((f) => extname(f) in FILE_TYPES).sort();
   const summaries: DocumentSummary[] = [];
-  for (const name of files) {
+  for (const name of (await readdir(dir)).sort()) {
+    const fileType = fileTypeFromName(name);
+    if (!fileType) continue;
     const data = await readFile(join(dir, name));
-    summaries.push(
-      await indexDocument(providers, { name, fileType: FILE_TYPES[extname(name)]!, data }),
-    );
+    summaries.push(await indexDocument(providers, { name, fileType, data }));
   }
   return summaries;
 }

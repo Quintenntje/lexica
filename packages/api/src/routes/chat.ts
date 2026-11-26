@@ -3,7 +3,6 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import {
   chatRequestSchema,
-  type ApiError,
   type ChatRequest,
   type LexicaMessage,
   type Source,
@@ -14,6 +13,7 @@ import { buildSystemPrompt } from '../pipeline/prompt';
 import { hasRelevantPassage } from '../pipeline/relevance';
 import { retrieve } from '../pipeline/retriever';
 import type { Providers, SearchHit } from '../providers/types';
+import { apiError, serviceUnavailable } from './errors';
 
 /**
  * Single-turn retrieval: only the latest user message is answered. Earlier
@@ -48,13 +48,16 @@ export function chatRoutes(providers: Providers, { minRelevanceScore }: ChatOpti
   return new Hono().post('/', async (c) => {
     const body: unknown = await c.req.json().catch(() => undefined);
     const parsed = chatRequestSchema.safeParse(body);
-    if (!parsed.success)
-      return c.json<ApiError>(validationError(z.prettifyError(parsed.error)), 400);
+    if (!parsed.success) {
+      return apiError(c, 400, 'VALIDATION_ERROR', z.prettifyError(parsed.error));
+    }
     const question = latestQuestion(parsed.data);
     if (!question) {
-      return c.json<ApiError>(
-        validationError('The latest user message must contain a non-empty text question.'),
+      return apiError(
+        c,
         400,
+        'VALIDATION_ERROR',
+        'The latest user message must contain a non-empty text question.',
       );
     }
 
@@ -63,17 +66,11 @@ export function chatRoutes(providers: Providers, { minRelevanceScore }: ChatOpti
     try {
       hits = await retrieve(providers, question);
     } catch (err) {
-      console.error(err);
-      return c.json<ApiError>(
-        {
-          error: {
-            code: 'RETRIEVAL_UNAVAILABLE',
-            message:
-              'Could not search the documents. Are Qdrant and Ollama running (npm run setup)?',
-          },
-        },
-        503,
-      );
+      return serviceUnavailable(c, {
+        code: 'RETRIEVAL_UNAVAILABLE',
+        message: 'Could not search the documents. Are Qdrant and Ollama running (npm run setup)?',
+        cause: err,
+      });
     }
 
     const signal = c.req.raw.signal; // aborted when the client presses stop
@@ -119,8 +116,4 @@ export function chatRoutes(providers: Providers, { minRelevanceScore }: ChatOpti
 
     return createUIMessageStreamResponse({ stream });
   });
-}
-
-function validationError(message: string): ApiError {
-  return { error: { code: 'VALIDATION_ERROR', message } };
 }

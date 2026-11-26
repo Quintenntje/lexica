@@ -1,3 +1,4 @@
+import { fuseRankings } from '../src/providers/fusion';
 import { summarizeDocuments } from '../src/providers/summarize';
 import type {
   ChatInput,
@@ -31,8 +32,14 @@ function embedText(text: string): number[] {
   return vector.map((v) => v / norm);
 }
 
+/** `reachable: false` makes every embedding request fail, as when Ollama is down. */
 export function fakeEmbedder(health: Partial<ProviderHealth> = {}): Embedder {
   const model = health.model ?? 'fake-embed';
+  const reachable = health.reachable ?? true;
+  const embed = (text: string) => {
+    if (!reachable) throw new Error('fake embedder is unreachable');
+    return embedText(text);
+  };
   return {
     model,
     dimensions: FAKE_DIMENSIONS,
@@ -40,10 +47,10 @@ export function fakeEmbedder(health: Partial<ProviderHealth> = {}): Embedder {
       return { provider: 'fake', model, reachable: true, modelPresent: true, ...health };
     },
     async embedDocuments(texts) {
-      return texts.map(embedText);
+      return texts.map(embed);
     },
     async embedQuery(text) {
-      return embedText(text);
+      return embed(text);
     },
   };
 }
@@ -79,9 +86,18 @@ function cosine(a: number[], b: number[]): number {
   return dot / (Math.hypot(...a) * Math.hypot(...b) || 1);
 }
 
+/** A few of the English stop words Qdrant's BM25 drops, so "the" or "is" alone is no keyword match. */
+const STOP_WORDS = new Set(
+  'a an and are as at be by can do does for from has have how i in is it its may my of on or that the this to under what when which who will with'.split(
+    ' ',
+  ),
+);
+
 /** Lowercased words; like Qdrant's BM25 tokenizer, clause numbers such as "7.2" stay one token. */
 function keywords(text: string): string[] {
-  return text.toLowerCase().match(/[a-z0-9]+(?:\.[0-9]+)*/g) ?? [];
+  return (text.toLowerCase().match(/[a-z0-9]+(?:\.[0-9]+)*/g) ?? []).filter(
+    (word) => !STOP_WORDS.has(word),
+  );
 }
 
 /** BM25 score of every chunk for the query (k1 = 1.2, b = 0.75); chunks sharing no term are left out. */
@@ -106,66 +122,81 @@ function bm25(query: string, texts: string[]): Map<number, number> {
 /** Candidates taken from each ranking before fusion, as the Qdrant store does. */
 const PREFETCH_LIMIT = 20;
 
-/** Array-backed vector store. `chunks` exposes what the pipeline handed to the store. */
-export interface FakeVectorStore extends VectorStore {
-  readonly chunks: readonly ChunkRecord[];
+export interface FakeVectorStoreOptions {
+  /** False: every call fails (except the health check, which reports it), as when Qdrant is down. */
+  reachable?: boolean;
+  /** Only keyword matching is switched off; retrieval then ranks by semantic similarity alone. */
+  keywordSearch?: boolean;
 }
 
-export function fakeVectorStore(reachable = true): FakeVectorStore {
+/** Array-backed vector store; a test can replace any method (e.g. make `upsert` fail) on the returned object. */
+export function fakeVectorStore({
+  reachable = true,
+  keywordSearch = true,
+}: FakeVectorStoreOptions = {}): VectorStore {
   let chunks: ChunkRecord[] = [];
+  const available = () => {
+    if (!reachable) throw new Error('fake vector store is unreachable');
+  };
   return {
-    get chunks() {
-      return chunks;
-    },
     async checkHealth() {
       return { provider: 'fake', reachable };
     },
     async init() {
+      available();
       return { rebuilt: false };
     },
     async upsert(records) {
-      chunks = [...chunks, ...records];
+      available();
+      const ids = new Set(records.map((r) => r.id));
+      chunks = [...chunks.filter((c) => !ids.has(c.id)), ...records];
     },
-    async deleteDocument(documentId) {
-      chunks = chunks.filter((c) => c.documentId !== documentId);
+    async deleteDocument(documentId, { keep = [] } = {}) {
+      available();
+      chunks = chunks.filter((c) => c.documentId !== documentId || keep.includes(c.id));
     },
     async listDocuments() {
-      if (!reachable) throw new Error('fake vector store is unreachable');
+      available();
       return summarizeDocuments(chunks);
     },
     async search(vector, { limit, text }) {
-      if (!reachable) throw new Error('fake vector store is unreachable');
-      const similarity = chunks.map((c) => cosine(vector, c.vector));
-      const byDistance = chunks.map((_, i) => i).sort((a, b) => similarity[b]! - similarity[a]!);
-      let ranked = byDistance;
-      if (text !== undefined) {
-        // Reciprocal rank fusion like Qdrant's { fusion: 'rrf' }: sum of 1 / (k + rank) over both rankings.
-        const keywordScores = bm25(
-          text,
-          chunks.map((c) => c.searchText),
-        );
-        const byKeyword = [...keywordScores.keys()].sort(
-          (a, b) => keywordScores.get(b)! - keywordScores.get(a)!,
-        );
-        const fused = new Map<number, number>();
-        for (const ranking of [byDistance, byKeyword]) {
-          ranking.slice(0, PREFETCH_LIMIT).forEach((i, rank) => {
-            fused.set(i, (fused.get(i) ?? 0) + 1 / (2 + rank));
-          });
-        }
-        ranked = [...fused.keys()].sort((a, b) => fused.get(b)! - fused.get(a)!);
-      }
-      return ranked.slice(0, limit).map((i, position) => {
-        const payload: ChunkPayload & Partial<ChunkRecord> = { ...chunks[i]! };
-        delete payload.vector;
-        delete payload.searchText;
-        return {
-          ...payload,
-          id: `${payload.documentId}:${payload.chunkIndex}`,
-          score: similarity[i]!,
-          rank: position + 1,
-        };
-      });
+      available();
+      const similarity = new Map(chunks.map((c) => [c.id, cosine(vector, c.vector)]));
+      const semantic = chunks
+        .map((c) => c.id)
+        .sort((a, b) => similarity.get(b)! - similarity.get(a)!)
+        .slice(0, PREFETCH_LIMIT);
+      const keywordScores = keywordSearch
+        ? bm25(
+            text,
+            chunks.map((c) => c.keywordText),
+          )
+        : new Map<number, number>();
+      const keyword = [...keywordScores.keys()]
+        .sort((a, b) => keywordScores.get(b)! - keywordScores.get(a)!)
+        .map((i) => chunks[i]!.id)
+        .slice(0, PREFETCH_LIMIT);
+
+      return fuseRankings([semantic, keyword])
+        .slice(0, limit)
+        .map((id, position) => {
+          // A hit carries the payload, never the stored vector or keyword text.
+          const payload: ChunkPayload & { id: string } & Partial<ChunkRecord> = {
+            ...chunks.find((c) => c.id === id)!,
+          };
+          delete payload.vector;
+          delete payload.keywordText;
+          const keywordIndex = keyword.indexOf(id);
+          return {
+            ...payload,
+            score: similarity.get(id)!,
+            rank: position + 1,
+            keywordRank: keywordIndex === -1 ? null : keywordIndex + 1,
+          };
+        });
+    },
+    async drop() {
+      chunks = [];
     },
   };
 }

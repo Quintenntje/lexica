@@ -59,14 +59,17 @@ export interface ChunkPayload {
 }
 
 export interface ChunkRecord extends ChunkPayload {
-  /** Dense embedding of `searchText`. */
+  /** Unique id of this chunk (a UUID), assigned when the document is indexed. */
+  id: string;
+  /** Dense embedding of the passage with its document name and headings. */
   vector: number[];
   /**
-   * The text the chunk is found by: the passage plus its document name and
-   * headings. It is what `vector` embeds, and it is indexed for keyword (BM25)
-   * search so exact terms and clause numbers ("force majeure", "7.2") match.
+   * The text indexed for keyword (BM25) search: the passage plus its headings,
+   * so exact terms and clause numbers ("force majeure", "7.2") match. The
+   * document name is left out: it would make every chunk of a document a
+   * keyword match for any question that names the document.
    */
-  searchText: string;
+  keywordText: string;
 }
 
 /** A stored chunk returned by a similarity search. */
@@ -81,16 +84,18 @@ export interface SearchHit extends ChunkPayload {
   score: number;
   /** Position in the fused (semantic + keyword) ranking, starting at 1. Hits are ordered by it. */
   rank: number;
+  /**
+   * Position in the keyword (BM25) ranking on its own, starting at 1, or null
+   * when the passage shares no keyword with the question (or ranks below the
+   * keyword candidates that were considered).
+   */
+  keywordRank: number | null;
 }
 
 export interface SearchOptions {
   limit: number;
-  /**
-   * The question as text. When given, the search is hybrid: keyword (BM25)
-   * matches on it are fused with the nearest neighbours of the vector by
-   * reciprocal rank fusion. Without it, only the vector is used.
-   */
-  text?: string;
+  /** The question as text, matched by keyword (BM25) and fused with the nearest neighbours of the vector. */
+  text: string;
 }
 
 /** Stores chunk vectors with payload and searches them by similarity (e.g. Qdrant). */
@@ -103,16 +108,22 @@ export interface VectorStore {
    * whether that happened in this process.
    */
   init(options?: { rebuildIfOutdated?: boolean }): Promise<{ rebuilt: boolean }>;
+  /** Adds chunks; a chunk with an existing id is overwritten. */
   upsert(chunks: ChunkRecord[]): Promise<void>;
-  /** Removes every chunk of a document. */
-  deleteDocument(documentId: string): Promise<void>;
+  /**
+   * Removes every chunk of a document, except the chunks listed in `keep`
+   * (used to drop an earlier version only after its replacement is stored).
+   */
+  deleteDocument(documentId: string, options?: { keep?: string[] }): Promise<void>;
   /** One summary per document, derived from the stored chunks (there is no documents table). */
   listDocuments(): Promise<DocumentSummary[]>;
   /**
-   * The `limit` best-matching chunks, best first: closest to `vector` by cosine
-   * similarity, fused with keyword matches on `options.text` when it is given.
+   * The `limit` best-matching chunks, best first: the nearest neighbours of
+   * `vector` (cosine similarity) fused with the keyword matches on `options.text`.
    */
   search(vector: number[], options: SearchOptions): Promise<SearchHit[]>;
+  /** Deletes the whole store with all its chunks (the eval uses it for its temporary collection). */
+  drop(): Promise<void>;
 }
 
 export interface Providers {

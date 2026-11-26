@@ -1,10 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { Source } from '@lexica/shared';
-import { createApp } from '../src/app';
-import { indexDocument } from '../src/pipeline/indexer';
-import { fakeChatModel, fakeEmbedder, fakeVectorStore } from './fakes';
-
-const encode = (text: string) => new TextEncoder().encode(text);
+import { REFUSAL_SENTENCE, type Source } from '@lexica/shared';
+import { fakeChatModel, fakeVectorStore } from './fakes';
+import { ask, FAKE_MIN_RELEVANCE, testApp, uploadDocument } from './http';
 
 /**
  * Most clauses talk about obligations, notices and payments in words a question
@@ -44,37 +41,19 @@ const SUPPLY = `# Supply Agreement
 12.1 **Excused events.** Neither side is liable for failures caused by force majeure, such as war, flood or epidemic.
 `;
 
-async function setup() {
-  const providers = {
-    embedder: fakeEmbedder(),
-    chatModel: fakeChatModel(),
-    vectorStore: fakeVectorStore(),
-  };
-  await indexDocument(providers, { name: 'supply.md', fileType: 'md', data: encode(SUPPLY) });
-  // The bag-of-words fake embedder scores lower than nomic-embed-text, so these
-  // tests use the same fake-scale relevance threshold as chat.test.ts.
-  return { ...providers, app: createApp(providers, { minRelevanceScore: FAKE_MIN_RELEVANCE }) };
+/**
+ * An app with the supply agreement uploaded. `keywordSearch: false` gives the
+ * same app with keyword matching switched off in the fake vector store, so a
+ * test can show what semantic similarity alone would retrieve.
+ */
+async function setup({ keywordSearch = true } = {}) {
+  const chatModel = fakeChatModel();
+  const providers = testApp({ chatModel, vectorStore: fakeVectorStore({ keywordSearch }) });
+  await uploadDocument(providers.app, 'supply.md', SUPPLY);
+  return { ...providers, chatModel };
 }
 
-const FAKE_MIN_RELEVANCE = 0.45;
-
-async function ask(app: ReturnType<typeof createApp>, question: string): Promise<Source[]> {
-  const res = await app.request('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      messages: [{ id: 'u1', role: 'user', parts: [{ type: 'text', text: question }] }],
-    }),
-  });
-  expect(res.status).toBe(200);
-  // Each source part is one SSE event: `data: {"type":"data-source",...,"data":{...}}`.
-  return (await res.text())
-    .split('\n')
-    .filter((line) => line.startsWith('data: {'))
-    .map((line) => JSON.parse(line.slice('data: '.length)) as { type: string; data: Source })
-    .filter((event) => event.type === 'data-source')
-    .map((event) => event.data);
-}
+const sectionsOf = (sources: Source[]) => sources.map((s) => s.section);
 
 describe('POST /api/chat with hybrid (semantic + keyword) retrieval', () => {
   const cases: [string, string, string][] = [
@@ -93,35 +72,77 @@ describe('POST /api/chat with hybrid (semantic + keyword) retrieval', () => {
   it.each(cases)(
     'retrieves the clause matching %s that semantic similarity alone ranks too low',
     async (_, question, section) => {
-      const { app, embedder, vectorStore, chatModel } = await setup();
+      const semanticOnly = await setup({ keywordSearch: false });
+      const { app, chatModel } = await setup();
 
       // Premise: by semantic similarity alone the clause is not among the passages retrieved.
-      const semanticOnly = await vectorStore.search(await embedder.embedQuery(question), {
-        limit: 5,
-      });
-      expect(semanticOnly.map((hit) => hit.section)).not.toContain(section);
+      expect(sectionsOf((await ask(semanticOnly.app, question)).sources)).not.toContain(section);
 
-      const sources = await ask(app, question);
+      const { sources } = await ask(app, question);
 
-      expect(sources.map((s) => s.section)).toContain(section);
+      expect(sectionsOf(sources)).toContain(section);
       const source = sources.find((s) => s.section === section)!;
       expect(chatModel.calls[0]!.system).toContain(`[${source.index}] supply.md — ${section}`);
     },
   );
 
-  it('keeps reporting each source with its cosine similarity, not its fused rank score', async () => {
-    const { app, embedder, vectorStore } = await setup();
+  it('reports each source with its cosine similarity, not its fused rank score', async () => {
     const question = 'What happens to obligations under this agreement during force majeure?';
+    const semanticOnly = await ask((await setup({ keywordSearch: false })).app, question);
+    const hybrid = await ask((await setup()).app, question);
 
-    const sources = await ask(app, question);
+    // A passage scores the same whether it was found by meaning or by keyword.
+    const cosine = new Map(semanticOnly.sources.map((s) => [s.section, s.score]));
+    const shared = hybrid.sources.filter((s) => cosine.has(s.section));
+    expect(shared.length).toBeGreaterThan(0);
+    for (const s of shared) expect(s.score).toBeCloseTo(cosine.get(s.section)!, 10);
+    // Fused order is not score order: a keyword hit can rank above a closer passage.
+    const scores = hybrid.sources.map((s) => s.score);
+    expect(scores).not.toEqual([...scores].sort((a, b) => b - a));
+  });
+});
 
-    const cosine = new Map(
-      (await vectorStore.search(await embedder.embedQuery(question), { limit: 100 })).map((hit) => [
-        hit.id,
-        hit.score,
-      ]),
+describe('POST /api/chat relevance check with hybrid retrieval', () => {
+  const keywordQuestions: [string, string, string][] = [
+    ['an exact legal term', 'Who is liable during force majeure?', 'Art. 12.1 — Excused events'],
+    ['a clause number', 'What is in Art. 7.2?', 'Art. 7.2 — Audit rights'],
+  ];
+
+  it.each(keywordQuestions)(
+    'answers a question about %s whose clause is found by keyword, though no passage reaches the threshold',
+    async (_, question, section) => {
+      const { app, chatModel } = await setup();
+
+      const { text, sources } = await ask(app, question);
+
+      // Premise: semantic similarity alone would refuse (every score is below the threshold).
+      for (const s of sources) expect(s.score).toBeLessThan(FAKE_MIN_RELEVANCE);
+      expect(sources[0]!.section).toBe(section);
+      expect(chatModel.calls).toHaveLength(1);
+      expect(text).not.toBe(REFUSAL_SENTENCE);
+    },
+  );
+
+  it('still refuses an off-topic question that matches no keyword', async () => {
+    const { app, chatModel } = await setup();
+
+    const { text } = await ask(app, 'Can I bring my dog to the office?');
+
+    expect(text).toBe(REFUSAL_SENTENCE);
+    expect(chatModel.calls).toHaveLength(0);
+  });
+
+  it('still refuses an off-topic question whose only keyword match is far from it in meaning', async () => {
+    const { app, chatModel } = await setup();
+
+    // "flood" matches clause 12.1 by keyword, but the question is about something else entirely.
+    const { text, sources } = await ask(
+      app,
+      'Will the flood in Venice raise gondola prices for tourists this summer?',
     );
-    expect(sources.length).toBe(5);
-    for (const source of sources) expect(source.score).toBeCloseTo(cosine.get(source.id)!, 10);
+
+    expect(sectionsOf(sources)).toContain('Art. 12.1 — Excused events');
+    expect(text).toBe(REFUSAL_SENTENCE);
+    expect(chatModel.calls).toHaveLength(0);
   });
 });
