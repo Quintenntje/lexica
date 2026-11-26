@@ -25,3 +25,9 @@ export const listDocumentsResponseSchema = z.object({
 export type FileType = z.infer<typeof fileTypeSchema>;
 export type DocumentSummary = z.infer<typeof documentSummarySchema>;
 export type ListDocumentsResponse = z.infer<typeof listDocumentsResponseSchema>;
+
+/** Largest file `POST /api/documents` accepts (20 MB). */
+export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+
+/** Extensions the upload endpoint accepts, as used in a file input's `accept` attribute. */
+export const UPLOAD_ACCEPT = '.pdf,.md,.txt';
