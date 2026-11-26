@@ -5,7 +5,7 @@ import {
   type UIMessage,
 } from 'ai';
 import { describe, expect, it } from 'vitest';
-import { sourceSchema, type Source } from '@lexica/shared';
+import { REFUSAL_SENTENCE, sourceSchema, type Source } from '@lexica/shared';
 import { createApp } from '../src/app';
 import { indexDocument } from '../src/pipeline/indexer';
 import { fakeChatModel, fakeEmbedder, fakeVectorStore } from './fakes';
@@ -40,6 +40,12 @@ const EMPLOYMENT = `# Employment Agreement
 6.1 **Salary.** The employee receives a gross monthly salary paid on the last working day.
 `;
 
+/**
+ * Relevance threshold for the bag-of-words fake embedder: questions about the
+ * documents below score 0.5 or more, unrelated ones 0.4 or less.
+ */
+const FAKE_MIN_RELEVANCE = 0.45;
+
 async function setup(reply?: string[]) {
   const providers = {
     embedder: fakeEmbedder(),
@@ -52,7 +58,7 @@ async function setup(reply?: string[]) {
     fileType: 'md',
     data: encode(EMPLOYMENT),
   });
-  return { ...providers, app: createApp(providers) };
+  return { ...providers, app: createApp(providers, { minRelevanceScore: FAKE_MIN_RELEVANCE }) };
 }
 
 function userMessage(text: string, id = 'u1') {
@@ -259,5 +265,43 @@ describe('POST /api/chat when the documents cannot be searched', () => {
     expect(await res.json()).toEqual({
       error: { code: 'RETRIEVAL_UNAVAILABLE', message: expect.any(String) },
     });
+  });
+});
+
+describe('POST /api/chat when no passage is relevant enough', () => {
+  it('streams the fixed refusal with the nearest passages as sources, without calling the chat model', async () => {
+    const { app, chatModel } = await setup();
+
+    const res = await postChat(app, {
+      messages: [userMessage('Can I bring my dog to the office?')],
+    });
+
+    expect(res.status).toBe(200);
+    const { text, sources } = await readAnswer(res);
+    expect(text).toBe('The answer was not found in the documents.');
+    expect(sources).toHaveLength(5);
+    expect(sources.every((s) => s.score < FAKE_MIN_RELEVANCE)).toBe(true);
+    expect(chatModel.calls).toHaveLength(0);
+  });
+
+  it('refuses based on the configured threshold', async () => {
+    const { chatModel, embedder, vectorStore } = await setup();
+    const strict = createApp({ chatModel, embedder, vectorStore }, { minRelevanceScore: 0.99 });
+
+    const { text, sources } = await readAnswer(
+      await postChat(strict, { messages: [userMessage('What is the notice period?')] }),
+    );
+
+    expect(text).toBe('The answer was not found in the documents.');
+    expect(sources[0]!.section).toBe('Art. 5.1 — Notice period');
+    expect(chatModel.calls).toHaveLength(0);
+  });
+
+  it('tells the chat model to reply with the same refusal when the context is insufficient', async () => {
+    const { app, chatModel } = await setup();
+
+    await postChat(app, { messages: [userMessage('What is the notice period?')] });
+
+    expect(chatModel.calls[0]!.system).toContain(`"${REFUSAL_SENTENCE}"`);
   });
 });

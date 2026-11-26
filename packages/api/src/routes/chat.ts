@@ -7,9 +7,11 @@ import {
   type ChatRequest,
   type LexicaMessage,
   type Source,
+  REFUSAL_SENTENCE,
 } from '@lexica/shared';
 import { mapCitations } from '../pipeline/citations';
 import { buildSystemPrompt } from '../pipeline/prompt';
+import { hasRelevantPassage } from '../pipeline/relevance';
 import { retrieve } from '../pipeline/retriever';
 import type { Providers, SearchHit } from '../providers/types';
 
@@ -37,7 +39,12 @@ function toSource(hit: SearchHit, index: number): Source {
   };
 }
 
-export function chatRoutes(providers: Providers) {
+export interface ChatOptions {
+  /** Below this score for every passage, the fixed refusal is sent and the model is not called. */
+  minRelevanceScore: number;
+}
+
+export function chatRoutes(providers: Providers, { minRelevanceScore }: ChatOptions) {
   return new Hono().post('/', async (c) => {
     const body: unknown = await c.req.json().catch(() => undefined);
     const parsed = chatRequestSchema.safeParse(body);
@@ -78,6 +85,16 @@ export function chatRoutes(providers: Providers) {
         hits.forEach((hit, i) => {
           writer.write({ type: 'data-source', id: hit.id, data: toSource(hit, i) });
         });
+
+        // DECIDE: nothing relevant enough, so refuse without calling the model.
+        // The nearest passages above still go out, so the user can judge how close the search came.
+        if (!hasRelevantPassage(hits, minRelevanceScore)) {
+          writer.write({ type: 'text-start', id: 'answer' });
+          writer.write({ type: 'text-delta', id: 'answer', delta: REFUSAL_SENTENCE });
+          writer.write({ type: 'text-end', id: 'answer' });
+          writer.write({ type: 'finish', finishReason: 'stop' });
+          return;
+        }
 
         // PROMPT + GENERATE: stream the model's answer token by token,
         // CITE: with markers to non-existent passages removed on the way.

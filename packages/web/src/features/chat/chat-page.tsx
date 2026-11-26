@@ -1,6 +1,7 @@
 import { useChat } from '@ai-sdk/react';
 import {
   apiErrorSchema,
+  isRefusal,
   lexicaDataPartSchemas,
   type LexicaMessage,
   type Source,
@@ -11,6 +12,7 @@ import { useState, type FormEvent } from 'react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { AnswerText } from './answer-text';
+import { RefusalNotice } from './refusal-notice';
 import { SourceList } from './source-list';
 import { SourcePanel } from './source-panel';
 
@@ -83,15 +85,19 @@ export function ChatPage() {
                 );
               }
               const sources = sourcesOf(message);
+              const refused = isRefusal(text);
               return (
                 <li key={message.id} className="space-y-4">
-                  {text ? (
+                  {refused ? (
+                    <RefusalNotice hasSources={sources.length > 0} />
+                  ) : text ? (
                     <AnswerText text={text} sources={sources} onOpenSource={setOpenSource} />
                   ) : (
                     <p className="text-sm text-muted-foreground">Writing the answer…</p>
                   )}
                   {sources.length > 0 && (
                     <SourceList
+                      title={refused ? 'Closest passages' : 'Sources'}
                       sources={sources}
                       activeId={openSource?.id}
                       onOpenSource={setOpenSource}

@@ -6,7 +6,7 @@ import { createProviders } from './providers';
 loadEnvFile();
 const config = loadConfig();
 const providers = createProviders(config);
-const app = createApp(providers);
+const app = createApp(providers, { minRelevanceScore: config.MIN_RELEVANCE_SCORE });
 
 // Create the Qdrant collection on startup if it is missing. If Qdrant is not up
 // yet, the API still starts (health shows it) and the store retries on first use.
