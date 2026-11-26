@@ -7,6 +7,7 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "seed": "tsx src/cli/seed.ts",
+    "eval": "tsx src/cli/eval.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run"
   },

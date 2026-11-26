@@ -41,3 +41,23 @@ npm run seed
 ```
 
 The seed command deletes and recreates the collection (`QDRANT_COLLECTION`, default `lexica_chunks`) in the new layout and indexes the sample contracts again. Documents you uploaded yourself are removed with it: upload them again afterwards. The same applies when `EMBEDDING_DIMENSIONS` no longer matches the collection.
+
+## Evaluation
+
+```sh
+npm run eval              # needs Qdrant + Ollama running (npm run setup)
+npm run eval -- --verbose # also prints every answer with its retrieved passages
+```
+
+The eval asks the 13 questions in `packages/api/src/eval/cases.ts` through the real stack: the same `POST /api/chat` handler the web app uses, with the real Ollama models and Qdrant. Ten questions have a known answer in the sample contracts (expected document + clause, and the key facts the answer must state); three are not answered by the documents, so the only correct answer is the refusal sentence.
+
+It seeds the sample contracts into a temporary Qdrant collection (`lexica_eval_<timestamp>`) and drops it afterwards, so your own `lexica_chunks` collection and uploads are never touched.
+
+It prints one row per question and a summary:
+
+- **Retrieval hit rate**: the expected clause is among the top-k retrieved passages (and at which rank).
+- **Answer cites the expected source**: one of the answer's `[n]` markers points to a passage from the expected clause.
+- **Key facts stated**: the answer contains the expected facts (e.g. "30 days", "GBP 68,000").
+- **Out-of-scope questions refused** and **in-scope questions wrongly refused**.
+
+A case passes when its passage was retrieved, cited, all facts were stated and it was not refused (or, out of scope, when it was refused). Answers come from a small local model, so results vary a little between runs and machines; failed cases are printed with their answer and retrieved passages to see where it went wrong.
