@@ -40,37 +40,82 @@ export function createOllamaEmbedder(options: {
   model: string;
   dimensions: number;
 }): Embedder {
+  async function embed(input: string[]): Promise<number[][]> {
+    const res = await fetch(new URL('/api/embed', options.baseUrl), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: options.model, input }),
+    });
+    if (!res.ok) throw new Error(`Ollama embed failed (${res.status}): ${await res.text()}`);
+    const { embeddings } = (await res.json()) as { embeddings: number[][] };
+    if (
+      embeddings.length !== input.length ||
+      embeddings.some((v) => v.length !== options.dimensions)
+    ) {
+      throw new Error(
+        `Ollama returned unexpected embeddings: expected ${input.length} vectors of ${options.dimensions} dimensions.`,
+      );
+    }
+    return embeddings;
+  }
+
   return {
     model: options.model,
     dimensions: options.dimensions,
     checkHealth: () => checkOllamaModel(options.baseUrl, options.model),
-    async embedDocuments(texts) {
-      const res = await fetch(new URL('/api/embed', options.baseUrl), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: options.model,
-          input: texts.map((t) => `search_document: ${t}`),
-        }),
-      });
-      if (!res.ok) throw new Error(`Ollama embed failed (${res.status}): ${await res.text()}`);
-      const { embeddings } = (await res.json()) as { embeddings: number[][] };
-      if (
-        embeddings.length !== texts.length ||
-        embeddings.some((v) => v.length !== options.dimensions)
-      ) {
-        throw new Error(
-          `Ollama returned unexpected embeddings: expected ${texts.length} vectors of ${options.dimensions} dimensions.`,
-        );
-      }
-      return embeddings;
-    },
+    embedDocuments: (texts) => embed(texts.map((t) => `search_document: ${t}`)),
+    embedQuery: async (text) => (await embed([`search_query: ${text}`]))[0]!,
   };
 }
 
+/**
+ * RAG stage 6 — GENERATE (Ollama implementation).
+ *
+ * `POST /api/chat` with `stream: true` answers with NDJSON: one JSON object per
+ * line, each carrying the next few characters of the answer. They are yielded
+ * as they arrive, so the browser sees the answer being written.
+ */
 export function createOllamaChatModel(options: { baseUrl: string; model: string }): ChatModel {
   return {
     model: options.model,
     checkHealth: () => checkOllamaModel(options.baseUrl, options.model),
+    async *stream({ system, messages, signal }) {
+      const res = await fetch(new URL('/api/chat', options.baseUrl), {
+        method: 'POST',
+        signal, // the stop button aborts the request, which stops generation in Ollama
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: options.model,
+          stream: true,
+          messages: [{ role: 'system', content: system }, ...messages],
+          // Low temperature keeps answers close to the passages; the context
+          // window must fit the passages plus the question (Ollama's default is smaller).
+          options: { temperature: 0.1, num_ctx: 8192 },
+        }),
+      });
+      if (!res.ok || !res.body) {
+        throw new Error(`Ollama chat failed (${res.status}): ${await res.text()}`);
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for await (const bytes of res.body) {
+        buffer += decoder.decode(bytes, { stream: true });
+        let newline: number;
+        while ((newline = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          const part = JSON.parse(line) as {
+            message?: { content?: string };
+            done?: boolean;
+            error?: string;
+          };
+          if (part.error) throw new Error(part.error);
+          if (part.message?.content) yield part.message.content;
+          if (part.done) return;
+        }
+      }
+    },
   };
 }

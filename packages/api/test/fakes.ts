@@ -1,5 +1,6 @@
 import { summarizeDocuments } from '../src/providers/summarize';
 import type {
+  ChatInput,
   ChatModel,
   ChunkRecord,
   Embedder,
@@ -40,17 +41,41 @@ export function fakeEmbedder(health: Partial<ProviderHealth> = {}): Embedder {
     async embedDocuments(texts) {
       return texts.map(embedText);
     },
+    async embedQuery(text) {
+      return embedText(text);
+    },
   };
 }
 
-export function fakeChatModel(health: Partial<ProviderHealth> = {}): ChatModel {
+/** Scripted chat model. `calls` records every prompt it received, so tests can assert on it. */
+export interface FakeChatModel extends ChatModel {
+  readonly calls: readonly ChatInput[];
+}
+
+/** Replies with `reply`, one stream delta per element, whatever it is asked. */
+export function fakeChatModel(
+  health: Partial<ProviderHealth> = {},
+  reply: string[] = ['According to ', 'the contract ', '[1].'],
+): FakeChatModel {
   const model = health.model ?? 'fake-chat';
+  const calls: ChatInput[] = [];
   return {
     model,
+    calls,
     async checkHealth() {
       return { provider: 'fake', model, reachable: true, modelPresent: true, ...health };
     },
+    async *stream(input) {
+      calls.push(input);
+      yield* reply;
+    },
   };
+}
+
+function cosine(a: number[], b: number[]): number {
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i]! * b[i]!;
+  return dot / (Math.hypot(...a) * Math.hypot(...b) || 1);
 }
 
 /** Array-backed vector store. `chunks` exposes what the pipeline handed to the store. */
@@ -77,6 +102,17 @@ export function fakeVectorStore(reachable = true): FakeVectorStore {
     async listDocuments() {
       if (!reachable) throw new Error('fake vector store is unreachable');
       return summarizeDocuments(chunks);
+    },
+    async search(vector, { limit }) {
+      if (!reachable) throw new Error('fake vector store is unreachable');
+      return chunks
+        .map(({ vector: stored, ...payload }) => ({
+          ...payload,
+          id: `${payload.documentId}:${payload.chunkIndex}`,
+          score: cosine(vector, stored),
+        }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, limit);
     },
   };
 }

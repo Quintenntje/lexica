@@ -14,6 +14,7 @@
     "@hono/node-server": "^2.1.11",
     "@lexica/shared": "*",
     "@qdrant/js-client-rest": "^1.20.0",
+    "ai": "^7.0.183",
     "hono": "^4.13.22",
     "zod": "^4.6.7"
   },

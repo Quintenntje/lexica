@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import type { ApiError } from '@lexica/shared';
 import type { Providers } from './providers/types';
+import { chatRoutes } from './routes/chat';
 import { documentRoutes } from './routes/documents';
 import { healthRoutes } from './routes/health';
 
@@ -13,6 +14,7 @@ export function createApp(providers: Providers) {
 
   app.route('/api/health', healthRoutes(providers));
   app.route('/api/documents', documentRoutes(providers));
+  app.route('/api/chat', chatRoutes(providers));
 
   app.notFound((c) =>
     c.json<ApiError>({ error: { code: 'NOT_FOUND', message: `No route for ${c.req.path}` } }, 404),

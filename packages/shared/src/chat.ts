@@ -1,0 +1,47 @@
+import type { UIMessage } from 'ai';
+import { z } from 'zod';
+
+/**
+ * One retrieved passage, sent to the client as a `data-source` part of the
+ * answer stream. `index` is the number the model cites it with: `[1]` refers
+ * to the source with index 1.
+ */
+export const sourceSchema = z.object({
+  index: z.number().int().positive(),
+  /** Chunk id; also the id of the stream part, so a resent part replaces the old one. */
+  id: z.string(),
+  documentName: z.string(),
+  /** Citation label, e.g. "Art. 7.2 — Termination for convenience". */
+  section: z.string(),
+  /** Page the passage starts on, or null when the format has no pages. */
+  page: z.number().int().positive().nullable(),
+  text: z.string(),
+  /** Cosine similarity between the question and the passage (higher is more relevant). */
+  score: z.number(),
+});
+
+/**
+ * Body of `POST /api/chat`, as sent by the AI SDK's `useChat`. Kept loose on
+ * purpose: earlier assistant messages come back with all their parts, and only
+ * the latest user message is used.
+ */
+export const chatRequestSchema = z.object({
+  messages: z
+    .array(
+      z.object({
+        id: z.string(),
+        role: z.enum(['user', 'assistant', 'system']),
+        parts: z.array(z.looseObject({ type: z.string() })),
+      }),
+    )
+    .min(1),
+});
+
+export type Source = z.infer<typeof sourceSchema>;
+export type ChatRequest = z.infer<typeof chatRequestSchema>;
+
+/** Chat message type shared by the API stream and `useChat`: no metadata, one `source` data part. */
+export type LexicaMessage = UIMessage<never, { source: Source }>;
+
+/** Data-part schemas for `useChat({ dataPartSchemas })`, so the client validates sources too. */
+export const lexicaDataPartSchemas = { source: sourceSchema };

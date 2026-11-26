@@ -112,5 +112,20 @@ export function createQdrantVectorStore(options: {
       } while (offset !== undefined);
       return summarizeDocuments(payloads);
     },
+
+    // RAG stage 5 — RETRIEVE: nearest neighbours of the question vector.
+    async search(vector, { limit }) {
+      await ensureCollection();
+      const { points } = await client.query(collection, {
+        query: vector,
+        limit,
+        with_payload: true,
+      });
+      return points.map((p) => ({
+        ...(p.payload as unknown as ChunkPayload),
+        id: String(p.id),
+        score: p.score,
+      }));
+    },
   };
 }

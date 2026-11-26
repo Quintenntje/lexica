@@ -5,8 +5,7 @@ import type { DocumentSummary, FileType, ModelHealth, VectorStoreHealth } from '
  *
  * Production wires in Ollama and Qdrant; tests wire in in-memory fakes; a cloud
  * provider could be swapped in without touching the pipeline. Each interface
- * only grows the methods a ticket actually needs (query embedding, streaming
- * chat and search arrive with the chat ticket).
+ * only grows the methods a ticket actually needs.
  */
 
 export type ProviderHealth = ModelHealth;
@@ -19,12 +18,28 @@ export interface Embedder {
   checkHealth(): Promise<ModelHealth>;
   /** Embeds passages that will be stored and searched (one vector per text, same order). */
   embedDocuments(texts: string[]): Promise<number[][]>;
+  /** Embeds a question, to be compared against the stored passages. */
+  embedQuery(text: string): Promise<number[]>;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface ChatInput {
+  system: string;
+  messages: ChatMessage[];
+  /** Aborted when the client stops the answer; generation should stop too. */
+  signal?: AbortSignal;
 }
 
 /** Generates a streamed answer from a system prompt and messages (e.g. Ollama `qwen2.5:3b`). */
 export interface ChatModel {
   readonly model: string;
   checkHealth(): Promise<ModelHealth>;
+  /** Streams the answer as text deltas (tokens or small groups of them). */
+  stream(input: ChatInput): AsyncIterable<string>;
 }
 
 /** Everything stored with a chunk besides its vector; this is what citations are built from. */
@@ -47,6 +62,14 @@ export interface ChunkRecord extends ChunkPayload {
   vector: number[];
 }
 
+/** A stored chunk returned by a similarity search. */
+export interface SearchHit extends ChunkPayload {
+  /** Stable id of the stored chunk. */
+  id: string;
+  /** Cosine similarity to the query vector, from -1 to 1 (higher is closer). */
+  score: number;
+}
+
 /** Stores chunk vectors with payload and searches them by similarity (e.g. Qdrant). */
 export interface VectorStore {
   checkHealth(): Promise<VectorStoreHealth>;
@@ -57,6 +80,8 @@ export interface VectorStore {
   deleteDocument(documentId: string): Promise<void>;
   /** One summary per document, derived from the stored chunks (there is no documents table). */
   listDocuments(): Promise<DocumentSummary[]>;
+  /** The `limit` chunks closest to `vector` by cosine similarity, most similar first. */
+  search(vector: number[], options: { limit: number }): Promise<SearchHit[]>;
 }
 
 export interface Providers {
