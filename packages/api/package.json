@@ -1,0 +1,28 @@
+{
+  "name": "@lexica/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "seed": "tsx src/cli/seed.ts",
+    "eval": "tsx src/cli/eval.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.1.11",
+    "@lexica/shared": "*",
+    "@qdrant/js-client-rest": "^1.20.0",
+    "ai": "^7.0.183",
+    "hono": "^4.13.22",
+    "unpdf": "^2.2.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "pdf-lib": "^1.17.1",
+    "tsx": "^4.23.15",
+    "vitest": "^5.1.2"
+  }
+}
