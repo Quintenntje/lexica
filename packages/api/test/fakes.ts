@@ -2,6 +2,7 @@ import { summarizeDocuments } from '../src/providers/summarize';
 import type {
   ChatInput,
   ChatModel,
+  ChunkPayload,
   ChunkRecord,
   Embedder,
   ProviderHealth,
@@ -155,7 +156,9 @@ export function fakeVectorStore(reachable = true): FakeVectorStore {
         ranked = [...fused.keys()].sort((a, b) => fused.get(b)! - fused.get(a)!);
       }
       return ranked.slice(0, limit).map((i, position) => {
-        const { vector: _vector, searchText: _searchText, ...payload } = chunks[i]!;
+        const payload: ChunkPayload & Partial<ChunkRecord> = { ...chunks[i]! };
+        delete payload.vector;
+        delete payload.searchText;
         return {
           ...payload,
           id: `${payload.documentId}:${payload.chunkIndex}`,
