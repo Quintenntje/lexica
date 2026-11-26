@@ -23,7 +23,8 @@ export function buildSystemPrompt(passages: SearchHit[]): string {
 
 Rules:
 - Answer only from the numbered context passages below. Do not use general knowledge.
-- After every statement, cite the passage(s) it comes from with bracketed numbers, e.g. [1] or [2][3].
+- Answer in full sentences that repeat the contract's own wording, with every number, period, amount and place exactly as written in the passage. Never answer with only a citation number.
+- End each sentence with the bracketed number(s) of the passage(s) it comes from, e.g. "The supplier must give written notice before it suspends the service [2]." or [1][3].
 - Only cite numbers that appear in the context.
 - If the passages do not contain the answer, reply with exactly this sentence and nothing else: "${REFUSAL_SENTENCE}"
 - Be concise and quote the exact wording of the contract where it matters.

@@ -53,9 +53,24 @@ export const lexicaDataPartSchemas = { source: sourceSchema };
  */
 export const REFUSAL_SENTENCE = 'The answer was not found in the documents.';
 
+/** Phrasings a model uses instead of the exact refusal: "… do not mention …", "I could not find …", "There is no information …". */
+const REWORDED_REFUSAL = [
+  /\b(?:not|no|nowhere)\b.{0,60}\b(?:found|find|mention(?:s|ed)?|contain(?:s|ed)?|provide(?:s|d)?|specif(?:y|ies|ied)|state(?:s|d)?|include(?:s|d)?|address(?:es|ed)?|cover(?:s|ed)?|say(?:s)?)\b/,
+  /\b(?:cannot|can't|could not|couldn't|unable to)\b.{0,40}\b(?:find|answer|determine|locate|tell)\b/,
+  /\bno (?:information|mention|details?|reference)\b/,
+];
+/** A reworded refusal talks about the sources rather than about the contract's content. */
+const ABOUT_THE_SOURCES = /\b(?:documents?|passages?|context|provided (?:text|information))\b/;
+/** Real answers can be long; a refusal is a sentence or two. */
+const MAX_REFUSAL_LENGTH = 300;
+
 /**
  * Whether an answer is the refusal, whether the API sent it or the model wrote
- * it (allowing for stray whitespace, citation markers and a missing full stop).
+ * it. Besides the exact sentence (allowing for stray whitespace, citation
+ * markers and a missing full stop), a short answer that rewords it counts too,
+ * e.g. "The documents do not mention parental leave." A negative statement
+ * with a citation ("The agreement does not include a non-compete [2].") is an
+ * answer, not a refusal, unless it says the documents lack the answer.
  */
 export function isRefusal(text: string): boolean {
   const normalize = (s: string) =>
@@ -65,5 +80,10 @@ export function isRefusal(text: string): boolean {
       .trim()
       .replace(/\.$/, '')
       .toLowerCase();
-  return normalize(text) === normalize(REFUSAL_SENTENCE);
+  const answer = normalize(text);
+  if (answer === normalize(REFUSAL_SENTENCE)) return true;
+  if (!answer || answer.length > MAX_REFUSAL_LENGTH) return false;
+  if (!REWORDED_REFUSAL.some((pattern) => pattern.test(answer))) return false;
+  const cites = /\[\d+\]/.test(text);
+  return !cites || ABOUT_THE_SOURCES.test(answer);
 }
