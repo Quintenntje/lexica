@@ -51,8 +51,12 @@ async function setup() {
     vectorStore: fakeVectorStore(),
   };
   await indexDocument(providers, { name: 'supply.md', fileType: 'md', data: encode(SUPPLY) });
-  return { ...providers, app: createApp(providers) };
+  // The bag-of-words fake embedder scores lower than nomic-embed-text, so these
+  // tests use the same fake-scale relevance threshold as chat.test.ts.
+  return { ...providers, app: createApp(providers, { minRelevanceScore: FAKE_MIN_RELEVANCE }) };
 }
+
+const FAKE_MIN_RELEVANCE = 0.45;
 
 async function ask(app: ReturnType<typeof createApp>, question: string): Promise<Source[]> {
   const res = await app.request('/api/chat', {
