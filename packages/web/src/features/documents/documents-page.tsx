@@ -1,5 +1,9 @@
 import type { DocumentSummary, FileType } from '@lexica/shared';
-import { AlertTriangle, FileText, FolderOpen } from 'lucide-react';
+import { AlertTriangle, FileText, FolderOpen, Loader2, Trash2 } from 'lucide-react';
+import { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { UploadDocument } from './upload-document';
+import { useDeleteDocument } from './use-document-mutations';
 import { useDocuments } from './use-documents';
 
 const fileTypeLabel: Record<FileType, string> = { pdf: 'PDF', md: 'Markdown', txt: 'Text' };
@@ -12,13 +16,12 @@ function EmptyState() {
       <FolderOpen className="size-8 text-muted-foreground" aria-hidden />
       <h2 className="text-base font-semibold">No documents indexed yet</h2>
       <p className="max-w-md text-sm text-muted-foreground">
-        Lexica can only answer from documents it has indexed. Load the three fictional sample
-        contracts by running{' '}
+        Lexica can only answer from documents it has indexed. Upload your own PDF, Markdown or text
+        contract above, or load the three fictional sample contracts by running{' '}
         <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
           npm run seed
         </code>{' '}
-        in the project folder, then refresh this page. Uploading your own PDF, Markdown or text
-        files is coming soon.
+        in the project folder and refreshing this page.
       </p>
     </div>
   );
@@ -49,6 +52,57 @@ function LoadingRows() {
   );
 }
 
+/** Two-step delete: the first click asks for confirmation inside the row. */
+function DeleteDocument({ document }: { document: DocumentSummary }) {
+  const [confirming, setConfirming] = useState(false);
+  const remove = useDeleteDocument();
+
+  if (remove.isPending) {
+    return (
+      <span className="inline-flex items-center gap-2 text-sm text-muted-foreground" role="status">
+        <Loader2 className="size-4 animate-spin" aria-hidden />
+        Deleting…
+      </span>
+    );
+  }
+  if (confirming) {
+    return (
+      <span className="inline-flex items-center gap-2">
+        <span className="text-sm text-muted-foreground">Delete?</span>
+        <Button
+          size="sm"
+          variant="destructive"
+          onClick={() => remove.mutate(document.id, { onSettled: () => setConfirming(false) })}
+          aria-label={`Confirm deleting ${document.name}`}
+        >
+          Delete
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => setConfirming(false)} autoFocus>
+          Cancel
+        </Button>
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex flex-col items-end gap-1">
+      <Button
+        size="icon"
+        variant="ghost"
+        onClick={() => setConfirming(true)}
+        aria-label={`Delete ${document.name}`}
+        title="Delete document"
+      >
+        <Trash2 className="text-muted-foreground" />
+      </Button>
+      {remove.isError && (
+        <span role="alert" className="text-xs text-destructive">
+          {remove.error.message}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function DocumentTable({ documents }: { documents: DocumentSummary[] }) {
   return (
     <div className="overflow-x-auto rounded-xl border bg-card">
@@ -66,6 +120,9 @@ function DocumentTable({ documents }: { documents: DocumentSummary[] }) {
             </th>
             <th scope="col" className="px-4 py-3 font-medium">
               Indexed
+            </th>
+            <th scope="col" className="px-4 py-3 text-right font-medium">
+              <span className="sr-only">Actions</span>
             </th>
           </tr>
         </thead>
@@ -87,6 +144,9 @@ function DocumentTable({ documents }: { documents: DocumentSummary[] }) {
               <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
                 <time dateTime={doc.createdAt}>{dateFormat.format(new Date(doc.createdAt))}</time>
               </td>
+              <td className="px-4 py-2 text-right whitespace-nowrap">
+                <DeleteDocument document={doc} />
+              </td>
             </tr>
           ))}
         </tbody>
@@ -107,6 +167,8 @@ export function DocumentsPage() {
           articles and clauses.
         </p>
       </header>
+
+      <UploadDocument />
 
       {isPending ? (
         <LoadingRows />

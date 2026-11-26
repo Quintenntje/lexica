@@ -2,12 +2,13 @@ import { createHash } from 'node:crypto';
 import type { DocumentSummary, FileType } from '@lexica/shared';
 import type { ChunkRecord, Providers } from '../providers/types';
 import { chunkDocument, type TextChunk } from './chunker';
+import { DocumentRejectedError } from './errors';
 import { parseDocument } from './parser';
 
 /**
  * The indexing pipeline: PARSE → CHUNK → EMBED → STORE.
  *
- * Shared by the seed command and (later) the upload endpoint, so sample
+ * Shared by the seed command and the upload endpoint, so sample
  * contracts and uploaded files go through exactly the same steps.
  */
 
@@ -49,7 +50,9 @@ export async function indexDocument(
 
   // 2. CHUNK: split along article/clause structure, then cap the size (see chunker.ts).
   const chunks = chunkDocument(pages);
-  if (chunks.length === 0) throw new Error(`"${input.name}" contains no text to index.`);
+  if (chunks.length === 0) {
+    throw new DocumentRejectedError('EMPTY_DOCUMENT', `"${input.name}" contains no text to index.`);
+  }
 
   // 3. EMBED: one vector per chunk, batched.
   const vectors: number[][] = [];
