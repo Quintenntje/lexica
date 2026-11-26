@@ -45,3 +45,25 @@ export type LexicaMessage = UIMessage<never, { source: Source }>;
 
 /** Data-part schemas for `useChat({ dataPartSchemas })`, so the client validates sources too. */
 export const lexicaDataPartSchemas = { source: sourceSchema };
+
+/**
+ * The fixed answer when the documents do not contain the answer. The API sends
+ * it without calling the model when no passage is relevant enough, and the
+ * prompt tells the model to reply with exactly this sentence otherwise.
+ */
+export const REFUSAL_SENTENCE = 'The answer was not found in the documents.';
+
+/**
+ * Whether an answer is the refusal, whether the API sent it or the model wrote
+ * it (allowing for stray whitespace, citation markers and a missing full stop).
+ */
+export function isRefusal(text: string): boolean {
+  const normalize = (s: string) =>
+    s
+      .replace(/\[\d+\]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/\.$/, '')
+      .toLowerCase();
+  return normalize(text) === normalize(REFUSAL_SENTENCE);
+}

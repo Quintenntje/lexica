@@ -1,5 +1,5 @@
 import { useChat } from '@ai-sdk/react';
-import { lexicaDataPartSchemas, type LexicaMessage, type Source } from '@lexica/shared';
+import { isRefusal, lexicaDataPartSchemas, type LexicaMessage, type Source } from '@lexica/shared';
 import { DefaultChatTransport } from 'ai';
 import { SendHorizontal, Square, SquarePen } from 'lucide-react';
 import { useEffect, useRef, useState, type FormEvent } from 'react';
@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils';
 import { AnswerText } from './answer-text';
 import { ChatError } from './chat-error';
 import { ExampleQuestions } from './example-questions';
+import { RefusalNotice } from './refusal-notice';
 import { SourceList } from './source-list';
 import { SourcePanel } from './source-panel';
 
@@ -114,9 +115,12 @@ export function ChatPage() {
                 }
                 const sources = sourcesOf(message);
                 const writing = busy && message === lastMessage;
+                const refused = isRefusal(text);
                 return (
                   <li key={message.id} className="space-y-4">
-                    {text ? (
+                    {refused ? (
+                      <RefusalNotice hasSources={sources.length > 0} />
+                    ) : text ? (
                       <AnswerText text={text} sources={sources} onOpenSource={showSource} />
                     ) : (
                       writing && (
@@ -128,6 +132,7 @@ export function ChatPage() {
                     )}
                     {sources.length > 0 && (
                       <SourceList
+                        title={refused ? 'Closest passages' : 'Sources'}
                         sources={sources}
                         activeId={openSource?.id}
                         onOpenSource={showSource}

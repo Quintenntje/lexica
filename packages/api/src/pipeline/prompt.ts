@@ -1,3 +1,4 @@
+import { REFUSAL_SENTENCE } from '@lexica/shared';
 import type { SearchHit } from '../providers/types';
 
 /**
@@ -24,7 +25,7 @@ Rules:
 - Answer only from the numbered context passages below. Do not use general knowledge.
 - After every statement, cite the passage(s) it comes from with bracketed numbers, e.g. [1] or [2][3].
 - Only cite numbers that appear in the context.
-- If the passages do not contain the answer, say that you could not find it in the documents.
+- If the passages do not contain the answer, reply with exactly this sentence and nothing else: "${REFUSAL_SENTENCE}"
 - Be concise and quote the exact wording of the contract where it matters.
 
 Context passages:

@@ -5,17 +5,19 @@ import { sourceLocation } from './source-location';
 
 /** Every passage retrieved for an answer, listed under it; each opens the source panel. */
 export function SourceList({
+  title = 'Sources',
   sources,
   activeId,
   onOpenSource,
 }: {
+  title?: string;
   sources: Source[];
   activeId: string | undefined;
   onOpenSource: (source: Source) => void;
 }) {
   return (
-    <section aria-label="Sources" className="space-y-2">
-      <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Sources</h3>
+    <section aria-label={title} className="space-y-2">
+      <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">{title}</h3>
       <ol className="grid gap-1.5 sm:grid-cols-2">
         {sources.map((source) => (
           <li key={source.id}>

@@ -17,7 +17,7 @@ npm run dev     # API on http://localhost:8787, web app on http://localhost:5173
 
 Other scripts: `npm run lint`, `npm run typecheck`, `npm test`, `npm run format`.
 
-Configuration lives in `.env` (see `.env.example`): service URLs, `QDRANT_COLLECTION`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `CHAT_MODEL` and `API_PORT`.
+Configuration lives in `.env` (see `.env.example`): service URLs, `QDRANT_COLLECTION`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `CHAT_MODEL`, `MIN_RELEVANCE_SCORE` (below it Lexica answers "not found in the documents" without calling the model) and `API_PORT`.
 
 ## Sample contracts
 

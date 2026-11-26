@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import type { ApiError } from '@lexica/shared';
 import type { Providers } from './providers/types';
-import { chatRoutes } from './routes/chat';
+import { DEFAULT_MIN_RELEVANCE_SCORE } from './pipeline/relevance';
+import { chatRoutes, type ChatOptions } from './routes/chat';
 import { documentRoutes } from './routes/documents';
 import { healthRoutes } from './routes/health';
 
@@ -9,12 +10,17 @@ import { healthRoutes } from './routes/health';
  * App factory. The app receives its providers instead of creating them, so
  * production passes Ollama/Qdrant and tests pass in-memory fakes.
  */
-export function createApp(providers: Providers) {
+export type AppOptions = Partial<ChatOptions>;
+
+export function createApp(
+  providers: Providers,
+  { minRelevanceScore = DEFAULT_MIN_RELEVANCE_SCORE }: AppOptions = {},
+) {
   const app = new Hono();
 
   app.route('/api/health', healthRoutes(providers));
   app.route('/api/documents', documentRoutes(providers));
-  app.route('/api/chat', chatRoutes(providers));
+  app.route('/api/chat', chatRoutes(providers, { minRelevanceScore }));
 
   app.notFound((c) =>
     c.json<ApiError>({ error: { code: 'NOT_FOUND', message: `No route for ${c.req.path}` } }, 404),
