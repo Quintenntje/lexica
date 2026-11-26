@@ -12,6 +12,7 @@
   },
   "scripts": {
     "setup": "node scripts/setup.mjs",
+    "seed": "npm run seed -w @lexica/api",
     "dev": "concurrently -k -n api,web -c blue,magenta \"npm run dev -w @lexica/api\" \"npm run dev -w @lexica/web\"",
     "lint": "eslint .",
     "format": "prettier --write .",

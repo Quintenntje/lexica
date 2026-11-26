@@ -1,24 +1,17 @@
-import { fileURLToPath } from 'node:url';
 import { serve } from '@hono/node-server';
 import { createApp } from './app';
-import { loadConfig } from './config';
-import { createOllamaChatModel, createOllamaEmbedder } from './providers/ollama';
-import { createQdrantVectorStore } from './providers/qdrant';
+import { loadConfig, loadEnvFile } from './config';
+import { createProviders } from './providers';
 
-// Load the repo-root .env if present; real environment variables take precedence.
-try {
-  process.loadEnvFile(fileURLToPath(new URL('../../../.env', import.meta.url)));
-} catch {
-  // No .env file: fall back to the environment and the defaults in config.ts.
-}
-
+loadEnvFile();
 const config = loadConfig();
+const providers = createProviders(config);
+const app = createApp(providers);
 
-// Production wiring: real providers behind the same interfaces the tests fake.
-const app = createApp({
-  embedder: createOllamaEmbedder({ baseUrl: config.OLLAMA_URL, model: config.EMBEDDING_MODEL }),
-  chatModel: createOllamaChatModel({ baseUrl: config.OLLAMA_URL, model: config.CHAT_MODEL }),
-  vectorStore: createQdrantVectorStore({ url: config.QDRANT_URL }),
+// Create the Qdrant collection on startup if it is missing. If Qdrant is not up
+// yet, the API still starts (health shows it) and the store retries on first use.
+providers.vectorStore.init().catch((err: unknown) => {
+  console.warn(`Vector store not ready yet: ${err instanceof Error ? err.message : String(err)}`);
 });
 
 serve({ fetch: app.fetch, port: config.API_PORT }, (info) => {
