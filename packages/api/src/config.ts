@@ -1,5 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { DEFAULT_MIN_RELEVANCE_SCORE } from './pipeline/relevance';
 
 /** Runtime configuration, read from environment variables (see `.env.example`). */
 const configSchema = z.object({
@@ -11,6 +12,8 @@ const configSchema = z.object({
   /** Vector size of the embedding model (nomic-embed-text: 768). Sizes the Qdrant collection. */
   EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(768),
   CHAT_MODEL: z.string().min(1).default('qwen2.5:3b'),
+  /** Minimum cosine similarity a passage needs to count as relevant; below it for all, Lexica refuses. */
+  MIN_RELEVANCE_SCORE: z.coerce.number().min(-1).max(1).default(DEFAULT_MIN_RELEVANCE_SCORE),
   API_PORT: z.coerce.number().int().positive().default(8787),
 });
 
